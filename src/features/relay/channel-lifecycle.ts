@@ -9,6 +9,7 @@ import { yieldToHost } from "./yield";
 import { hasTag, newer, type RelayEvent } from "./events";
 import { openMetadata } from "./discovery";
 import {
+  channelTypeTag,
   DM_VISIBILITY_KIND,
   exactLifecycleTag,
   lifecycleChannelId,
@@ -399,8 +400,29 @@ export function createChannelLifecycle({
               throw new Error("This conversation can’t be joined right now.");
             return false;
           };
+          // The relay accepts the auto-join flag only from community owners
+          // and admins, a role the channel's own records cannot show. Check
+          // what signed metadata can: an active public stream channel.
+          const flaggable = async () => {
+            assertAccess(id);
+            const metadata = await read([39000], id, signal);
+            assertAccess(id);
+            const channel = lifecycleRecord(metadata, 39000, id, relayAuthor);
+            if (
+              !channel ||
+              !openMetadata(channel) ||
+              exactLifecycleTag(channel, "archived") === "true" ||
+              channelTypeTag(channel) !== "stream"
+            )
+              throw new Error(
+                "Only active public channels can auto-join new members.",
+              );
+            return false;
+          };
           const authorize = async () => {
             if (action === "join") return joined();
+            if (action === "auto-join-on" || action === "auto-join-off")
+              return flaggable();
             const settings = await load(
               id,
               signal,
@@ -483,7 +505,17 @@ export function createChannelLifecycle({
                 read([kind], id, signal, action === "leave", true),
               );
               const record = lifecycleRecord(events, kind, id, relayAuthor);
-              if (action === "archive" || action === "unarchive") {
+              if (action === "auto-join-on" || action === "auto-join-off") {
+                // Readback is the bare effective-state tag, not the written value.
+                if (
+                  record &&
+                  record.tags.some(([key]) => key === "auto_join") ===
+                    (action === "auto-join-on")
+                ) {
+                  acceptDiscovery([record]);
+                  return;
+                }
+              } else if (action === "archive" || action === "unarchive") {
                 const archived =
                   record && exactLifecycleTag(record, "archived");
                 // The relay omits the archived tag on active channels. Absence

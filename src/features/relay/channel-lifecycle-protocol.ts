@@ -7,8 +7,13 @@ export type ChannelLifecycleAction =
   | "delete"
   | "leave"
   | "hide";
-/** Join is not a confirmed member action: it starts from a nonmember preview. */
-export type ChannelLifecycleCommand = ChannelLifecycleAction | "join";
+/** Join is not a confirmed member action: it starts from a nonmember preview.
+ * The auto-join switch is a relay owner/admin metadata edit without confirmation. */
+export type ChannelLifecycleCommand =
+  | ChannelLifecycleAction
+  | "join"
+  | "auto-join-on"
+  | "auto-join-off";
 export const CHANNEL_LIFECYCLE_KINDS = [9002, 9008, 9021, 9022, 41012] as const;
 export const DM_VISIBILITY_KIND = 30622;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -27,6 +32,8 @@ export function lifecycleTemplate(
   const kind = {
     archive: 9002,
     unarchive: 9002,
+    "auto-join-on": 9002,
+    "auto-join-off": 9002,
     delete: 9008,
     join: 9021,
     leave: 9022,
@@ -40,7 +47,9 @@ export function lifecycleTemplate(
       ["h", lifecycleChannelId(channelId)],
       ...(action === "archive" || action === "unarchive"
         ? [["archived", action === "archive" ? "true" : "false"]]
-        : []),
+        : action === "auto-join-on" || action === "auto-join-off"
+          ? [["auto_join", action === "auto-join-on" ? "true" : "false"]]
+          : []),
     ],
   };
   validateLifecycleTemplate(event);
@@ -64,12 +73,14 @@ export function validateLifecycleTemplate(event: EventTemplate): void {
   lifecycleChannelId(event.tags[0]?.[1] ?? "");
   if (
     event.kind === 9002 &&
-    !["true", "false"].some(
-      (value) =>
-        JSON.stringify(event.tags[1]) === JSON.stringify(["archived", value]),
+    !["archived", "auto_join"].some((name) =>
+      ["true", "false"].some(
+        (value) =>
+          JSON.stringify(event.tags[1]) === JSON.stringify([name, value]),
+      ),
     )
   )
-    throw new Error("Only archive metadata may be changed here");
+    throw new Error("Only archive or auto-join metadata may be changed here");
 }
 
 export function exactLifecycleTag(event: RelayEvent, name: string) {

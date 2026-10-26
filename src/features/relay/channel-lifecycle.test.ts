@@ -53,12 +53,13 @@ function harness(role = "owner", type = "stream", owners = 1) {
   let timestamp = 100;
   const record = (kind: number, tags: string[][], content = "") =>
     finalizeEvent({ kind, tags, content, created_at: timestamp++ }, relayKey);
-  const metadata = (archived = false) =>
+  const metadata = (archived = false, autoJoin = false) =>
     record(39000, [
       ["d", id],
       ["t", type],
       ["name", "fixture"],
       ...(archived ? [["archived", "true"]] : []),
+      ...(autoJoin ? [["auto_join"]] : []),
     ]);
   const roles = (role: string) =>
     record(39001, [
@@ -103,6 +104,9 @@ function harness(role = "owner", type = "stream", owners = 1) {
         metadata(
           event.tags.some(
             ([key, value]) => key === "archived" && value === "true",
+          ),
+          event.tags.some(
+            ([key, value]) => key === "auto_join" && value === "true",
           ),
         ),
         ...events.filter((event) => event.kind !== 39000),
@@ -2030,6 +2034,14 @@ describe("Unarchive", () => {
     ],
     [["archived", "false", "extra"]],
     [["archived", "invalid"]],
+    [["auto_join"]],
+    [["auto_join", "maybe"]],
+    [["auto_join", "true", "extra"]],
+    [
+      ["archived", "false"],
+      ["auto_join", "true"],
+    ],
+    [["autojoin", "true"]],
   ])("does not broaden the metadata command: %j", (...tags) => {
     expect(() =>
       validateLifecycleTemplate({
@@ -2039,6 +2051,120 @@ describe("Unarchive", () => {
         tags: [["h", id], ...tags],
       }),
     ).toThrow();
+  });
+});
+
+describe("auto-join switch", () => {
+  function publicStream(
+    tags: string[][] = [["public"]],
+    type = "stream",
+    role = "member",
+  ) {
+    const h = harness(role, type);
+    const metadata = (autoJoin: boolean) =>
+      h.record(39000, [
+        ["d", id],
+        ["t", type],
+        ["name", "fixture"],
+        ...tags,
+        ...(autoJoin ? [["auto_join"]] : []),
+      ]);
+    h.setEvents([metadata(false), ...h.getEvents().slice(1)]);
+    h.publish.mockImplementation(async (event: RelayEvent) => {
+      if (event.kind === 9002)
+        h.setEvents([
+          metadata(
+            event.tags.some(
+              ([key, value]) => key === "auto_join" && value === "true",
+            ),
+          ),
+          ...h.getEvents().filter((event) => event.kind !== 39000),
+        ]);
+    });
+    return { ...h, metadata };
+  }
+
+  it.each([
+    ["auto-join-on", "true"],
+    ["auto-join-off", "false"],
+  ] as const)(
+    "%s publishes the narrow 9002 and confirms the bare readback tag",
+    async (action, value) => {
+      const clock = vi.spyOn(Date, "now").mockReturnValue(1_700_000_000_000);
+      const h = publicStream();
+      if (action === "auto-join-off")
+        h.setEvents([h.metadata(true), ...h.getEvents().slice(1)]);
+      try {
+        await h.owner.capability.run(action, id);
+        expect(h.sign.mock.calls[0]?.[0]).toEqual(
+          lifecycleTemplate(action, id),
+        );
+        expect(h.sign.mock.calls[0]?.[0]?.tags).toEqual([
+          ["h", id],
+          ["auto_join", value],
+        ]);
+        expect(h.publish).toHaveBeenCalledOnce();
+        expect(h.acceptDiscovery).toHaveBeenCalledOnce();
+        expect(
+          h.acceptDiscovery.mock.calls[0]?.[0]?.[0]?.tags.some(
+            ([key]: string[]) => key === "auto_join",
+          ),
+        ).toBe(action === "auto-join-on");
+        // Channel roles cannot show relay ownership: only signed metadata is read.
+        for (const [filters] of h.read.mock.calls)
+          expect(filters.map((filter) => filter.kinds)).toEqual([[39000]]);
+      } finally {
+        clock.mockRestore();
+        h.owner.dispose();
+      }
+    },
+  );
+
+  it.each([
+    [[["public"], ["private"]], "stream"],
+    [[], "stream"],
+    [[["public"], ["archived", "true"]], "stream"],
+    [[["public"]], "forum"],
+  ])(
+    "refuses metadata %j on a %s channel before signing",
+    async (tags, type) => {
+      const h = publicStream(tags, type);
+      try {
+        await expect(
+          h.owner.capability.run("auto-join-on", id),
+        ).rejects.toThrow(
+          "Only active public channels can auto-join new members.",
+        );
+        expect(h.sign).not.toHaveBeenCalled();
+        expect(h.acceptDiscovery).not.toHaveBeenCalled();
+      } finally {
+        h.owner.dispose();
+      }
+    },
+  );
+
+  it("surfaces the relay's refusal and keeps an unconfirmed flag uncertain", async () => {
+    const h = publicStream();
+    try {
+      h.publish.mockRejectedValueOnce(
+        new PublishRejected("rejected", "invalid: actor not authorized"),
+      );
+      await expect(
+        h.owner.capability.run("auto-join-on", id),
+      ).rejects.toMatchObject({ reason: "invalid: actor not authorized" });
+      // A relay that ignores the tag acks the write but never advertises it.
+      h.publish.mockImplementationOnce(async () => {});
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const pending = expect(
+        h.owner.capability.run("auto-join-on", id),
+      ).rejects.toBeInstanceOf(ChannelLifecycleUnconfirmed);
+      await vi.advanceTimersByTimeAsync(2500);
+      await pending;
+      expect(h.acceptDiscovery).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+      h.owner.dispose();
+    }
   });
 });
 

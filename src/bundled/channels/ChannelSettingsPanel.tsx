@@ -4,11 +4,16 @@ import {
   useId,
   useRef,
   useState,
+  useSyncExternalStore,
   type ReactElement,
   type ComponentProps,
   type ReactNode,
 } from "react";
 import type { ChannelSummary } from "../../features/relay/contracts";
+import type { ChannelLifecycleCapability } from "../../features/relay/channel-lifecycle";
+import { PublishRejected } from "../../features/relay/outbox";
+import { managesCommunity } from "../../features/communities/roster";
+import type { CommunityMembership } from "../moderation/membership";
 import { channelIcon } from "../../features/channels/channel-icon";
 import {
   GearIcon,
@@ -21,6 +26,7 @@ import { Tabs } from "../../shared/design-system/ui/Tabs";
 import { Tooltip } from "../../shared/design-system/ui/Tooltip";
 import { Panel } from "../../shared/design-system/ui/Panel";
 import { PanelHeader } from "../../shared/design-system/ui/PanelHeader";
+import { SwitchPreferenceRow } from "../../shared/design-system/ui/SwitchPreferenceRow";
 import styles from "./Channels.module.css";
 import type { ChannelDetailsCapability } from "../../features/relay/channel-details";
 import {
@@ -36,6 +42,8 @@ export function ChannelSettingsPanel({
   children,
   setupTools,
   details,
+  lifecycle,
+  membership,
   openMembers,
 }: {
   channel: ChannelSummary | undefined;
@@ -44,6 +52,9 @@ export function ChannelSettingsPanel({
   children: ReactNode;
   setupTools?: ReactNode;
   details?: ChannelDetailsCapability;
+  /** With `membership`, offers the community owner/admin auto-join switch. */
+  lifecycle?: ChannelLifecycleCapability | undefined;
+  membership?: CommunityMembership | undefined;
   openMembers?(trigger: HTMLButtonElement): void;
 }) {
   const tabbed = !!usePanelTabHost();
@@ -56,6 +67,12 @@ export function ChannelSettingsPanel({
       ?.focus({ preventScroll: true });
   }, [tabbed]);
   const ChannelIcon = channelIcon(channel);
+  const editable =
+    channel &&
+    (channel.channelType === "stream" || channel.channelType === "forum") &&
+    !channel.readOnly &&
+    !channel.cached &&
+    !channel.archived;
   const renderPanel = (
     edit?: ChannelDetailsAction,
     editStatus?: ReactNode,
@@ -165,6 +182,18 @@ export function ChannelSettingsPanel({
                       }
                     />
                   )}
+                {editable &&
+                  channel.channelType === "stream" &&
+                  channel.visibility === "public" &&
+                  lifecycle &&
+                  membership && (
+                    <AutoJoinSetting
+                      key={channel.id}
+                      channel={channel}
+                      lifecycle={lifecycle}
+                      membership={membership}
+                    />
+                  )}
                 {channel.members && (
                   <SettingsDetail
                     label="Members"
@@ -189,12 +218,6 @@ export function ChannelSettingsPanel({
       </div>
     </Panel>
   );
-  const editable =
-    channel &&
-    (channel.channelType === "stream" || channel.channelType === "forum") &&
-    !channel.readOnly &&
-    !channel.cached &&
-    !channel.archived;
   return editable && details?.available ? (
     <ChannelDetailsEditor
       channel={channel}
@@ -207,6 +230,77 @@ export function ChannelSettingsPanel({
       undefined,
       editable ? <p>Editing is unavailable on this connection.</p> : undefined,
     )
+  );
+}
+
+/**
+ * The relay enforces who may flag a channel for new members (community
+ * owners/admins on an active public stream channel); this gate only decides
+ * whether to show the switch. No optimistic state: the switch follows the
+ * signed metadata the lifecycle owner confirms.
+ */
+function AutoJoinSetting({
+  channel,
+  lifecycle,
+  membership,
+}: {
+  channel: ChannelSummary;
+  lifecycle: ChannelLifecycleCapability;
+  membership: CommunityMembership;
+}) {
+  const role = useSyncExternalStore(
+    membership.subscribe,
+    () => membership.snapshot().role,
+  );
+  useEffect(() => membership.ensure(), [membership]);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState("");
+  const operation = useRef<AbortController | undefined>(undefined);
+  useEffect(() => () => operation.current?.abort(), []);
+  if (!managesCommunity(role)) return null;
+  const toggle = async (enabled: boolean) => {
+    if (operation.current) return;
+    const controller = new AbortController();
+    operation.current = controller;
+    setPending(true);
+    setError("");
+    try {
+      await lifecycle.run(
+        enabled ? "auto-join-on" : "auto-join-off",
+        channel.id,
+        controller.signal,
+      );
+    } catch (error) {
+      if (!controller.signal.aborted)
+        setError(
+          error instanceof PublishRejected
+            ? (error.reason ??
+                "Only community owners and admins can change this.")
+            : error instanceof Error
+              ? error.message
+              : String(error),
+        );
+    } finally {
+      operation.current = undefined;
+      if (!controller.signal.aborted) setPending(false);
+    }
+  };
+  return (
+    <div className={styles.settingsSwitch}>
+      <SwitchPreferenceRow
+        label="Auto-join new members"
+        description="New community members are added to this channel automatically."
+        checked={!!channel.autoJoin}
+        disabled={pending || !lifecycle.available}
+        aria-busy={pending || undefined}
+        onCheckedChange={(enabled) => void toggle(enabled)}
+      />
+      {error && (
+        <p role="alert" className="text-danger">
+          {error}
+        </p>
+      )}
+    </div>
   );
 }
 

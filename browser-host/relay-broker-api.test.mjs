@@ -3291,6 +3291,24 @@ test("lifecycle uses dedicated shape-limited host routes, never the message writ
           ["name", "rename"],
         ],
       },
+      { ...template, kind: 9002, tags: [["h", id], ["auto_join"]] },
+      {
+        ...template,
+        kind: 9002,
+        tags: [
+          ["h", id],
+          ["auto_join", "maybe"],
+        ],
+      },
+      {
+        ...template,
+        kind: 9002,
+        tags: [
+          ["h", id],
+          ["archived", "true"],
+          ["auto_join", "true"],
+        ],
+      },
       {
         ...template,
         kind: 9022,
@@ -3349,7 +3367,23 @@ test("lifecycle uses dedicated shape-limited host routes, never the message writ
     expect(restore).toMatchObject(unarchive);
     expect((await h.post("publish", restore)).status).toBe(400);
     await transport.channelLifecycle.publish(restore, signal);
-    expect(h.publications).toHaveLength(2);
+    for (const value of ["true", "false"]) {
+      const flag = {
+        ...template,
+        kind: 9002,
+        tags: [
+          ["h", id],
+          ["auto_join", value],
+        ],
+      };
+      expect((await h.post("sign", flag)).status).toBe(400);
+      expect((await h.post("channel-details-sign", flag)).status).toBe(400);
+      const flagged = await transport.channelLifecycle.sign(flag, signal);
+      expect(verifyEvent(flagged)).toBe(true);
+      expect(flagged).toMatchObject(flag);
+      await transport.channelLifecycle.publish(flagged, signal);
+    }
+    expect(h.publications).toHaveLength(4);
   } finally {
     live?.dispose();
     await h.close();
