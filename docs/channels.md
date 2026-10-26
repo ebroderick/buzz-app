@@ -562,7 +562,7 @@ the returned command, and confirms relay-owned state before removing a row. Arch
 confirmed Delete/Leave use the existing access-loss purge. Commands use narrow
 development-broker routes or the packaged native `relay_channel_sign` and
 `relay_channel_publish` commands, never the message outbox or automatic replay.
-The same route carries the **Auto-join new members** switch as two commands
+The same route carries the **Starter channel for new members** switch as two commands
 without a confirmation dialog, `auto-join-on` and `auto-join-off`, each a `9002`
 with `auto_join=true|false`. The lifecycle owner requires fresh relay metadata for an
 active public stream channel before signing (channel roles cannot show community
@@ -652,7 +652,7 @@ row are omitted.
 Duration uses Create's Ongoing/Temporary cards. Access controls live in the members
 dialog, separate from the text and lifespan draft. These details controls stage
 changes; none publishes immediately.
-**Auto-join new members**, between Description and Members, is separate: an
+**Starter channel for new members**, between Description and Members, is separate: an
 immediate switch that publishes its own narrow `9002` (see
 [Channel lifecycle](#channel-lifecycle)) and shows pending, the relay's refusal
 or refresh guidance beside itself. It appears only to community owners and admins

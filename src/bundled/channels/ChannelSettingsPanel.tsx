@@ -288,7 +288,7 @@ function AutoJoinSetting({
   return (
     <div className={styles.settingsSwitch}>
       <SwitchPreferenceRow
-        label="Auto-join new members"
+        label="Starter channel for new members"
         description="New community members are added to this channel automatically."
         checked={!!channel.autoJoin}
         disabled={pending || !lifecycle.available}

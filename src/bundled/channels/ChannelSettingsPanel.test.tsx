@@ -312,10 +312,10 @@ function autoJoinPanel(
   );
 }
 const autoJoinSwitch = () =>
-  screen.getByRole("switch", { name: "Auto-join new members" });
+  screen.getByRole("switch", { name: "Starter channel for new members" });
 const noAutoJoinSwitch = () =>
   expect(
-    screen.queryByRole("switch", { name: "Auto-join new members" }),
+    screen.queryByRole("switch", { name: "Starter channel for new members" }),
   ).not.toBeInTheDocument();
 
 // [case, channel, community role, switch shown, roster read held]
