@@ -576,7 +576,8 @@ function ChannelWorkspace({
       ? undefined
       : requestedDestination;
   useLayoutEffect(() => {
-    chosen.current = requestedDestination?.id;
+    // An open draft resolves nothing; keep the choice for when it closes.
+    if (requestedDestination) chosen.current = requestedDestination.id;
     visiblePreview.current =
       current?.readOnly && !current.cached && !cached
         ? { channelId: current.id, queries }

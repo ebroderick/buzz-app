@@ -20,6 +20,8 @@ import type {
   RegisteredPanel,
 } from "../../features/panels/service";
 import type { PageNavigation } from "../../features/navigation/service";
+import type { OpenTarget } from "../../features/navigation/targets";
+import { soloDraftTarget } from "../../features/channel-navigation/routes";
 import {
   createRelaySession,
   type RelaySession,
@@ -341,16 +343,39 @@ function workspace(
     requestOpen: () => false,
     handleOpenRequests: () => () => {},
   };
-  render(
+  const navigator = createNavigationController(
+    createMemoryHistory(),
+  ).navigation;
+  const page = (navigation?: PageNavigation) => (
     <ToastProvider>
       <ChannelsPage
         relay={relay}
         panels={panels}
-        navigator={createNavigationController(createMemoryHistory()).navigation}
+        navigator={navigator}
+        navigation={navigation}
       />
-    </ToastProvider>,
+    </ToastProvider>
   );
-  return { owner, viewer, authority };
+  const { rerender } = render(page());
+  /** Re-route the mounted page; `undefined` returns to the unrouted workspace. */
+  const visit = (target?: OpenTarget) =>
+    rerender(
+      page(
+        target && {
+          entryId: "visit",
+          target,
+          signal: new AbortController().signal,
+          position: () => undefined,
+          savePosition() {},
+          forSession() {
+            return this;
+          },
+          resolve: () => true,
+          complete: () => true,
+        },
+      ),
+    );
+  return { owner, viewer, authority, scope: snapshot.scope, visit };
 }
 
 it("opens the community's auto-join channel first when nothing is saved", async () => {
@@ -414,6 +439,37 @@ it("keeps the channel being read when a default channel arrives later", async ()
     ).toContain("beta"),
   );
   expect(screen.getByRole("textbox", { name: "Message #Alpha" })).toBeVisible();
+  expect(screen.queryByRole("textbox", { name: "Message #Beta" })).toBeNull();
+});
+
+it("keeps the computed channel across a New chat draft opened and closed meanwhile", async () => {
+  const viewer = keypair(),
+    authority = keypair();
+  const events: RelayEvent[] = [
+    roster(authority, "alpha", [viewer.pubkey]),
+    metadata(authority, "alpha", "Alpha", undefined, [["t", "stream"]]),
+  ];
+  const { owner, scope, visit } = workspace(events, viewer, authority);
+  await screen.findByRole("textbox", { name: "Message #Alpha" });
+  visit(soloDraftTarget(scope));
+  await screen.findByRole("region", { name: "New chat" });
+  events.push(
+    roster(authority, "beta", [viewer.pubkey]),
+    metadata(authority, "beta", "Beta", undefined, [
+      ["t", "stream"],
+      ["auto_join"],
+    ]),
+  );
+  await act(() => owner.session.channels.resolve?.(["beta"]));
+  await vi.waitFor(() =>
+    expect(
+      owner.session.channels.list().channels.map(({ id }) => id),
+    ).toContain("beta"),
+  );
+  visit();
+  expect(
+    await screen.findByRole("textbox", { name: "Message #Alpha" }),
+  ).toBeVisible();
   expect(screen.queryByRole("textbox", { name: "Message #Beta" })).toBeNull();
 });
 
