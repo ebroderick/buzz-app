@@ -532,6 +532,8 @@ function ChannelWorkspace({
     channelId: string;
     queries: RelaySession;
   }>(undefined);
+  // The last resolved channel, saved or computed; see `requestedDestination`.
+  const chosen = useRef<string>(undefined);
   const previewAvailable =
     resolved?.request === navigation
       ? resolved?.available
@@ -557,6 +559,9 @@ function ChannelWorkspace({
           ? queries.channels.get?.(visiblePreview.current.channelId)
           : undefined) ??
         channels.find((channel) => channel.id === selected) ??
+        // A computed choice stays put while its channel is listed, so a channel
+        // flagged or added later never swaps the one being read.
+        channels.find((channel) => channel.id === chosen.current) ??
         // A new member lands in the community's default channel when it has one.
         channels.find(
           (channel) => channel.autoJoin && channel.channelType !== "solo",
@@ -571,6 +576,7 @@ function ChannelWorkspace({
       ? undefined
       : requestedDestination;
   useLayoutEffect(() => {
+    chosen.current = requestedDestination?.id;
     visiblePreview.current =
       current?.readOnly && !current.cached && !cached
         ? { channelId: current.id, queries }

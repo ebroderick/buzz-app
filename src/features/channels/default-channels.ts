@@ -2,27 +2,23 @@ import { useEffect, useSyncExternalStore } from "react";
 import type { ChannelLifecycleCapability } from "../relay/channel-lifecycle";
 import type { ChannelQueries } from "../relay/contracts";
 import { PublishRejected } from "../relay/outbox";
-import { relayPartition } from "../relay/partition";
 import { useChannelList } from "../relay/react";
 import type { RelaySession } from "../relay/session";
 import { readView, writeView } from "../../shared/view-state";
 
-/** One-shot per community and viewer; leaving the community purges it with
- * the rest of the view scope, so a rejoin starts fresh. */
+/** `done` once per community, viewer and device; leaving the community purges
+ * it with the rest of the view scope, so a rejoin starts fresh. */
 const KEY = "default-channels";
-
-/** A fresh admission (`joined`, never `already_member`): the roster should
- * carry the community's default channels once Messages opens. */
-export function markDefaultChannelsPending(origin: string, viewer: string) {
-  writeView(relayPartition(origin, viewer), KEY, "pending");
-}
 
 /** The relay joins new members into its `auto_join` channels itself. This is
  * the backstop for open or old relays and failed adds: with a verified-empty
- * roster, send 9021 for each flagged public channel, once. A non-empty
- * roster spends the one shot too, so leaving every channel later never
- * re-adds them. The marker stays until every candidate settled with
- * success or a definitive relay rejection; anything else retries next time. */
+ * roster, send 9021 for each flagged public channel, at most once per
+ * community, viewer and device. A non-empty roster spends the one shot too,
+ * so leaving every channel later never re-adds them on this device; a device
+ * that has never marked the scope done may re-add them once. The marker is
+ * written only when the directory read was complete and every candidate
+ * settled with success or a definitive relay rejection; anything else retries
+ * next time. */
 export async function ensureDefaultChannels({
   queries,
   lifecycle,
@@ -41,12 +37,14 @@ export async function ensureDefaultChannels({
   }
   if (!lifecycle.available || !queries.defaultChannels) return;
   let ids: readonly string[];
+  let partial: boolean;
   try {
-    ids = await queries.defaultChannels({ signal });
+    ({ ids, partial } = await queries.defaultChannels({ signal }));
   } catch {
     return;
   }
-  let settled = true;
+  // A capped directory page may hide flagged channels; leave the shot unspent.
+  let settled = !partial;
   // Sequential: the lifecycle owner is single-flight, and its join pre-read
   // already sends nothing for a channel the relay added meanwhile.
   for (const id of ids) {

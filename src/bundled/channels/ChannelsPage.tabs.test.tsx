@@ -391,6 +391,32 @@ it("selects a default channel the relay adds after the page opened", async () =>
   await screen.findByRole("textbox", { name: "Message #Beta" });
 });
 
+it("keeps the channel being read when a default channel arrives later", async () => {
+  const viewer = keypair(),
+    authority = keypair();
+  const events: RelayEvent[] = [
+    roster(authority, "alpha", [viewer.pubkey]),
+    metadata(authority, "alpha", "Alpha", undefined, [["t", "stream"]]),
+  ];
+  const { owner } = workspace(events, viewer, authority);
+  await screen.findByRole("textbox", { name: "Message #Alpha" });
+  events.push(
+    roster(authority, "beta", [viewer.pubkey]),
+    metadata(authority, "beta", "Beta", undefined, [
+      ["t", "stream"],
+      ["auto_join"],
+    ]),
+  );
+  await act(() => owner.session.channels.resolve?.(["beta"]));
+  await vi.waitFor(() =>
+    expect(
+      owner.session.channels.list().channels.map(({ id }) => id),
+    ).toContain("beta"),
+  );
+  expect(screen.getByRole("textbox", { name: "Message #Alpha" })).toBeVisible();
+  expect(screen.queryByRole("textbox", { name: "Message #Beta" })).toBeNull();
+});
+
 it("moving the last side app adopts its guest before the dock exit finishes", async () => {
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(
     new DOMRect(0, 0, 800, 500),
