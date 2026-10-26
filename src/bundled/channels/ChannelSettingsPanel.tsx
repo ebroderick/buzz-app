@@ -188,7 +188,7 @@ export function ChannelSettingsPanel({
                   lifecycle &&
                   membership && (
                     <AutoJoinSetting
-                      key={channel.id}
+                      key={`auto-join:${channel.id}`}
                       channel={channel}
                       lifecycle={lifecycle}
                       membership={membership}

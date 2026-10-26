@@ -382,6 +382,7 @@ it.each<[string, ChannelSummary, Role | undefined, boolean, boolean]>([
   "shows the auto-join switch for %s: %s",
   (_, channel, role, shown, ensured) => {
     const roster = membership(role);
+    const error = vi.spyOn(console, "error");
     const { unmount } = render(
       autoJoinPanel(channel, role, lifecycle(), roster),
     );
@@ -399,6 +400,11 @@ it.each<[string, ChannelSummary, Role | undefined, boolean, boolean]>([
         Node.DOCUMENT_POSITION_FOLLOWING,
       );
     } else noAutoJoinSwitch();
+    // The row and the channel ID detail are siblings; their keys must differ.
+    expect(error).not.toHaveBeenCalledWith(
+      expect.stringContaining("same key"),
+      expect.anything(),
+    );
     // The role read is held only while a channel-eligible row is mounted.
     expect(roster.ensure).toHaveBeenCalledTimes(ensured ? 1 : 0);
     unmount();
