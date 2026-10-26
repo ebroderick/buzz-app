@@ -56,7 +56,9 @@ restore of the account's [known communities](#known-communities) joins each
 admitted destination through the same read and call. `Welcome` is also the
 second caller of the invite intent (`invite-intent.ts`) beside OS deep links:
 an address typed on the welcome screen that the restore did not admit opens
-this dialog, prefilled, as the app opens.
+this dialog, prefilled, as the app opens. A newly admitted member's sidebar
+already lists the community's default channels and Messages opens the first of
+them; see [local-first launch](channels.md#local-first-launch).
 
 
 

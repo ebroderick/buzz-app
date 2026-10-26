@@ -26,6 +26,7 @@ import {
 } from "../../features/relay/session";
 import type { RelayData } from "../../features/relay/service";
 import { matchesEvent } from "../../features/relay/projection";
+import type { RelayEvent } from "../../features/relay/events";
 import {
   keypair,
   metadata,
@@ -293,6 +294,102 @@ it.each(["side", "main"] as const)(
     expect(open).not.toHaveBeenCalled();
   },
 );
+
+/** A page over `events` with no saved selection and no registered panels. */
+function workspace(
+  events: RelayEvent[],
+  viewer = keypair(),
+  authority = keypair(),
+) {
+  const owner = createRelaySession(
+    {
+      viewer: viewer.pubkey,
+      relayAuthor: authority.pubkey,
+      media: () => undefined,
+      query: async (filters) =>
+        events.filter((event) =>
+          filters.some((filter) => matchesEvent(event, filter)),
+        ),
+      writer: {
+        sign: async (template) => signed(viewer, template),
+        publish: async () => {},
+      },
+    },
+    { outboxStorage: { load: () => [], save: () => {} } },
+  );
+  owners.push(owner);
+  const snapshot = {
+    status: "ready" as const,
+    generation: 1,
+    scope: `https://relay.test:${viewer.pubkey}`,
+    viewer: viewer.pubkey,
+    session: owner.session,
+  };
+  const relay: RelayData = {
+    snapshot: () => snapshot,
+    subscribe: () => () => {},
+    retry() {},
+    disconnect() {},
+    clearCache: async () => {},
+  };
+  const none: RegisteredPanel[] = [];
+  const panels: Panels = {
+    snapshot: () => none,
+    subscribe: () => () => {},
+    resolve: () => undefined,
+    register() {},
+    requestOpen: () => false,
+    handleOpenRequests: () => () => {},
+  };
+  render(
+    <ToastProvider>
+      <ChannelsPage
+        relay={relay}
+        panels={panels}
+        navigator={createNavigationController(createMemoryHistory()).navigation}
+      />
+    </ToastProvider>,
+  );
+  return { owner, viewer, authority };
+}
+
+it("opens the community's auto-join channel first when nothing is saved", async () => {
+  const viewer = keypair(),
+    authority = keypair();
+  workspace(
+    [
+      roster(authority, "alpha", [viewer.pubkey]),
+      metadata(authority, "alpha", "Alpha", undefined, [["t", "stream"]]),
+      roster(authority, "beta", [viewer.pubkey]),
+      metadata(authority, "beta", "Beta", undefined, [
+        ["t", "stream"],
+        ["auto_join"],
+      ]),
+    ],
+    viewer,
+    authority,
+  );
+  await screen.findByRole("textbox", { name: "Message #Beta" });
+});
+
+it("selects a default channel the relay adds after the page opened", async () => {
+  const events: RelayEvent[] = [];
+  const { owner, viewer, authority } = workspace(events);
+  await vi.waitFor(() =>
+    expect(owner.session.channels.list().status).toBe("ready"),
+  );
+  expect(screen.queryByRole("textbox")).toBeNull();
+  // A 44100 membership hint resolves the channel through the same store entry.
+  events.push(
+    roster(authority, "beta", [viewer.pubkey]),
+    metadata(authority, "beta", "Beta", undefined, [
+      ["t", "stream"],
+      ["auto_join"],
+    ]),
+  );
+  await act(() => owner.session.channels.resolve?.(["beta"]));
+  await screen.findByRole("textbox", { name: "Message #Beta" });
+});
 
 it("moving the last side app adopts its guest before the dock exit finishes", async () => {
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(

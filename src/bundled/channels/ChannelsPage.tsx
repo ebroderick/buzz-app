@@ -112,6 +112,7 @@ import type {
 } from "../../features/relay/contracts";
 import { readView, writeView } from "../../shared/view-state";
 import { useChannelLabels } from "./useChannelLabels";
+import { useDefaultChannels } from "../../features/channels/default-channels";
 import { useComposerSent } from "./useComposerSent";
 import { useSidebarPreferences } from "./useSidebarPreferences";
 import { channelHasUnread } from "./useSidebarFilters";
@@ -397,6 +398,7 @@ function ChannelWorkspace({
   useEffect(() => {
     if (list.status === "ready") void queries.unread.ensure();
   }, [queries, list.status]);
+  useDefaultChannels(queries, scope, cached);
   const available = useSyncExternalStore(
     panels.subscribe,
     panels.snapshot,
@@ -548,6 +550,10 @@ function ChannelWorkspace({
           ? queries.channels.get?.(visiblePreview.current.channelId)
           : undefined) ??
         channels.find((channel) => channel.id === selected) ??
+        // A new member lands in the community's default channel when it has one.
+        channels.find(
+          (channel) => channel.autoJoin && channel.channelType !== "solo",
+        ) ??
         channels.find((item) => item.channelType !== "solo"));
   // Exact links and saved selections must respect the same Huddle-only entry point.
   const resolving =

@@ -15,6 +15,7 @@ import { Context } from "@deepseek-ai/cordis";
 import { createCommunities, type Communities } from "./service";
 import { stubAvatarBrowserApis } from "../agents/avatar-testing";
 import { federatedFixture } from "../federated-identity/testing";
+import { readView } from "../../shared/view-state";
 
 stubAvatarBrowserApis();
 
@@ -32,6 +33,7 @@ vi.mock("./api", async (actual) => ({
 
 afterEach(() => {
   cleanup();
+  localStorage.clear();
   vi.clearAllMocks();
   vi.unstubAllGlobals();
 });
@@ -502,6 +504,65 @@ it("prefills an invite but requires explicit discovery and claim before membersh
   );
   expect(communities.joined).not.toHaveBeenCalled();
 });
+
+it.each([
+  ["joined", "pending"],
+  ["already_member", undefined],
+])(
+  "a %s claim leaves the default-channel marker %s",
+  async (status, marker) => {
+    const user = userEvent.setup();
+    const viewer = "b".repeat(64);
+    api.inspectProfile
+      .mockRejectedValueOnce(new Error("not admitted"))
+      .mockResolvedValueOnce({
+        exists: true,
+        existing: { name: "Fixture" },
+        profile: { name: "Fixture", picture: "", about: "" },
+      });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        const route = String(url).split("/").at(-1);
+        if (route === "register") return Response.json({ id: "x" });
+        if (route === "info") return Response.json({ name: "Fixture" });
+        if (route === "claim") return Response.json({ status });
+        throw new Error(`Unexpected request: ${url}`);
+      }),
+    );
+    const communities = {
+      snapshot: () => ({
+        status: "ready",
+        relayAvailable: true,
+        viewer,
+        profile: { name: "", picture: "" },
+      }),
+      joined: vi.fn(),
+    } as unknown as Communities;
+    render(
+      <CommunityDialog
+        communities={communities}
+        mode="join"
+        close={() => {}}
+        invite={{ community: "https://relay.example", code: "v2.abc" }}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+    await screen.findByLabelText("Invite code (if required)");
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+    await user.click(
+      await screen.findByRole("button", { name: "Open community" }),
+    );
+    await waitFor(() => expect(communities.joined).toHaveBeenCalledOnce());
+    expect(
+      readView(
+        `https://relay.example:${viewer}`,
+        "default-channels",
+        undefined,
+      ),
+    ).toBe(marker);
+  },
+);
 
 it("renews policy acceptance after an expired receipt instead of replaying it", async () => {
   const user = userEvent.setup();

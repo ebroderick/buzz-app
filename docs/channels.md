@@ -1239,6 +1239,19 @@ concurrently with the real connection handshake. Saved groups, stars and channel
 names are display data, not a confirmed preference mutation base. No cache means
 the ordinary cold connection flow; unavailable/corrupt storage never grants access.
 
+With no saved selection, Messages opens the first channel the relay flags
+`auto_join` (its default for new members), then the first non-Solo channel; an
+explicit empty route bypasses both. The relay normally joins a new member into
+its `auto_join` channels during the invite claim, and the resulting membership
+hints populate the sidebar live. `features/channels/default-channels.ts` is the
+backstop for open or old relays and failed adds: once the live roster is
+verified and empty, it reads the public directory for flagged channels and
+sends one kind 9021 join per missing channel through the lifecycle owner, once
+per community and viewer. The `default-channels` view-state marker is written
+`pending` by a `joined` claim (never `already_member`, which may have left
+channels on purpose) and `done` once every candidate settles or the roster
+turns out non-empty; leaving the community purges it with the rest of the scope.
+
 A cached roster can display previously downloaded, reverified history for up to
 24 hours. It cannot authorize head/history reads, unread evidence, typing or
 publishing. Unconfirmed membership is not resaved with a fresh lease. An identical
