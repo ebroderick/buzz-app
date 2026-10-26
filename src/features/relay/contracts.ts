@@ -47,6 +47,8 @@ export type ChannelSummary = Readonly<{
   channelType?: "stream" | "forum" | "dm" | "solo" | "system";
   /** Relay-authored channel visibility; private channels use restricted presentation. */
   private?: true;
+  /** Relay-advertised default: the relay joins new community members here. */
+  autoJoin?: true;
   /** Presentation-only parent from signed channel metadata; never grants access. */
   parentChannelId?: string | undefined;
   /** Marked Huddle room; presented through its parent conversation, not the sidebar. */

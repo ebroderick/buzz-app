@@ -98,6 +98,27 @@ describe("channel store", () => {
     expect(queries.list().channels[0]?.private).toBe(true);
     store.dispose();
   });
+  it("replaces a channel summary when only its auto-join flag changes", async () => {
+    const { store, queries, next } = setup();
+    queries.ensureList();
+    next().respond([
+      roster(relay, "work", [viewer.pubkey]),
+      metadata(relay, "work", "Work"),
+    ]);
+    await flush();
+    const plain = queries.list().channels[0];
+    expect(plain?.autoJoin).toBeUndefined();
+
+    queries.refreshList?.();
+    next().respond([
+      roster(relay, "work", [viewer.pubkey]),
+      metadata(relay, "work", "Work", 1_700_000_001, [["auto_join"]]),
+    ]);
+    await flush();
+    expect(queries.list().channels[0]).not.toBe(plain);
+    expect(queries.list().channels[0]?.autoJoin).toBe(true);
+    store.dispose();
+  });
   it("preserves summary identity on preview refreshes and detects same-length DM roster changes", () => {
     const wire = scriptedTransport(viewer.pubkey, relay.pubkey);
     let live!: LiveCallbacks;
