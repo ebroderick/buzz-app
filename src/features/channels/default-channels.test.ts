@@ -231,6 +231,40 @@ it("settles a join cancelled after publishing, then stops", async () => {
   expect(h.marker()).toBe("done");
 });
 
+it("a run cancelled while publishing leaves a successor's settlement standing", async () => {
+  const old = new AbortController();
+  let published!: () => void;
+  const publishing = new Promise<void>((resolve) => (published = resolve));
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => (release = resolve));
+  const h = harness({
+    run: async (_action, _id, signal, publish) => {
+      if (signal !== old.signal) return;
+      publish();
+      published();
+      await held;
+      throw new ChannelLifecycleUnconfirmed(old.signal.reason);
+    },
+  });
+  const first = h.ensure(old.signal);
+  try {
+    await publishing;
+    expect(h.marker()).toEqual({ owed: ["general", "welcome"] });
+    // The session is replaced while the old #general publish is in flight.
+    old.abort();
+    await h.ensure();
+    expect(h.joins()).toEqual(["general", "welcome"]);
+    expect(h.marker()).toBe("done");
+  } finally {
+    release();
+  }
+  await first;
+  expect(h.marker()).toBe("done");
+  h.leave("welcome");
+  await h.ensure();
+  expect(h.joins()).toEqual(["general", "welcome"]);
+});
+
 it("sends no join until the owed snapshot is stored", async () => {
   const h = harness();
   const full = storageFull();

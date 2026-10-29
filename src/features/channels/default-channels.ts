@@ -8,7 +8,13 @@ import { PublishNotSent, PublishRejected } from "../relay/outbox";
 import { relayPartition } from "../relay/partition";
 import { useChannelList } from "../relay/react";
 import type { RelaySession } from "../relay/session";
-import { clearView, readView, writeView } from "../../shared/view-state";
+import {
+  clearView,
+  readView,
+  replaceView,
+  viewRevision,
+  writeView,
+} from "../../shared/view-state";
 
 /** `pending` from a fresh admission, then `{ owed }` once the first run has
  * snapshotted what the claim missed, then `done`; leaving the community purges
@@ -54,10 +60,12 @@ const settles = (error: unknown) =>
  * listed (already joined, archived or unflagged) or was definitively refused;
  * the marker is `done` when nothing is owed. Nothing is sent until the owed
  * set is stored, and a drop that cannot be stored forgets the marker, so a
- * channel this fallback may have joined is never owed again. No marker means
- * no fresh admission on this device (an upgrade, another device, cleared
- * storage or an open community), so nothing runs and a member's earlier leave
- * stands. */
+ * channel this fallback may have joined is never owed again. A run stops once
+ * another run (a successor after a session replacement) has changed the
+ * marker, so a late settlement never restores what that run already settled.
+ * No marker means no fresh admission on this device (an upgrade, another
+ * device, cleared storage or an open community), so nothing runs and a
+ * member's earlier leave stands. */
 export async function ensureDefaultChannels({
   queries,
   lifecycle,
@@ -69,6 +77,7 @@ export async function ensureDefaultChannels({
   scope: string;
   signal: AbortSignal;
 }): Promise<void> {
+  let revision = viewRevision(scope, KEY);
   const marker = readMarker(scope);
   if (!marker) return;
   if (!lifecycle.available || !queries.defaultChannels) return;
@@ -83,10 +92,17 @@ export async function ensureDefaultChannels({
       ? missing
       : marker.filter((id) => missing.includes(id));
   let owed = candidates;
-  const save = () => writeView(scope, KEY, owed.length ? { owed } : "done");
+  // Only over the marker this run last read or stored: a successor owns any
+  // other value.
+  const save = () => {
+    const value = owed.length ? { owed } : "done";
+    const result = replaceView(scope, KEY, revision, value);
+    if (result === "saved") revision = JSON.stringify(value);
+    return result;
+  };
   // Send nothing until the owed set is stored: a stale `pending` or owed set
   // would owe this run's joins again.
-  if (!save()) return;
+  if (save() !== "saved") return;
   // Sequential: the lifecycle owner is single-flight, and its join pre-read
   // already sends nothing for a channel the relay added meanwhile. Each settled
   // id is dropped at once, so a later leave of it stands even if this run stops.
@@ -101,7 +117,9 @@ export async function ensureDefaultChannels({
       }
     }
     owed = owed.filter((other) => other !== id);
-    if (save()) continue;
+    const saved = save();
+    if (saved === "saved") continue;
+    if (saved === "changed") return;
     // Storage still owes a channel that may have joined: give up the rest
     // rather than rejoin it after a leave.
     try {

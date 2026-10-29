@@ -1273,8 +1273,10 @@ is no longer a flagged public channel or is definitively refused. A rate limit,
 a join that was never sent or leaving Messages before sending keeps it owed, and
 the next launch retries only owed channels the viewer is still not in. If a
 dropped channel cannot be saved, the marker is forgotten rather than left owing
-a channel the viewer may since have left. The marker becomes `done` when nothing
-is owed. Without a marker nothing runs, so upgrading,
+a channel the viewer may since have left. A run stops once a newer run (after
+the connection was replaced) has changed the marker, so a late result from the
+older run never restores a channel the newer one settled. The marker becomes
+`done` when nothing is owed. Without a marker nothing runs, so upgrading,
 another device, cleared storage, a recovered claim whose reply was lost, and
 setup without an invite code never re-add channels the viewer left. Open
 communities, which require no claim, therefore get no client fallback: the
