@@ -5,7 +5,7 @@ import type { ChannelList } from "../relay/contracts";
 import { PublishNotSent, PublishRejected } from "../relay/outbox";
 import { ChannelLifecycleUnconfirmed } from "../relay/channel-lifecycle";
 import { relayPartition } from "../relay/partition";
-import { readView, writeView } from "../../shared/view-state";
+import { clearView, readView, writeView } from "../../shared/view-state";
 import { ensureDefaultChannels, useDefaultChannels } from "./default-channels";
 
 const viewer = "a".repeat(64);
@@ -54,9 +54,8 @@ function harness({
   // The store's contract: candidates are the flagged channels the viewer has
   // not joined, so a join that succeeded stays out of the next run.
   const roster = new Set(joined);
-  const defaultChannels = vi.fn(async () =>
-    ids.filter((id) => !roster.has(id)),
-  );
+  const read = async () => ids.filter((id) => !roster.has(id));
+  const defaultChannels = vi.fn(read);
   const lifecycle = {
     available,
     run: vi.fn(async (action: string, id: string, signal?: AbortSignal) => {
@@ -66,6 +65,8 @@ function harness({
   };
   return {
     defaultChannels,
+    /** The directory read `defaultChannels` answers with. */
+    read,
     lifecycle,
     marker: () => readView(scope, "default-channels", undefined),
     joins: () => lifecycle.run.mock.calls.map(([, id]) => id),
@@ -356,6 +357,9 @@ it("does not join a channel the other run settled meanwhile, so leaving it stand
   const joining = gate();
   const releaseNew = gate();
   const h = harness({
+    // #news stays owed after the others settle, so the successor reaches the
+    // settled #welcome rather than stopping at `done`.
+    ids: ["general", "welcome", "news"],
     run: async (_action, id, signal, publish) => {
       if (id === "general") {
         if (signal === old.signal)
@@ -380,7 +384,7 @@ it("does not join a channel the other run settled meanwhile, so leaving it stand
     await joining.opened;
     releaseOld.open();
     await first;
-    expect(h.marker()).toEqual({ owed: ["general"] });
+    expect(h.marker()).toEqual({ owed: ["general", "news"] });
     // The member leaves #welcome before the successor reaches it.
     h.leave("welcome");
   } finally {
@@ -388,8 +392,119 @@ it("does not join a channel the other run settled meanwhile, so leaving it stand
     releaseNew.open();
   }
   await second;
-  expect(h.joins()).toEqual(["general", "welcome", "general"]);
+  expect(h.joins()).toEqual(["general", "welcome", "general", "news"]);
   expect(h.marker()).toBe("done");
+});
+
+it("a successor still joins what is owed when the other run settles during its directory read", async () => {
+  const old = new AbortController();
+  const publishing = gate();
+  const release = gate();
+  const reading = gate();
+  const answer = gate();
+  const h = harness({
+    run: async (_action, _id, signal, publish) => {
+      if (signal !== old.signal) return;
+      publish();
+      publishing.open();
+      await release.opened;
+      throw new ChannelLifecycleUnconfirmed(old.signal.reason);
+    },
+  });
+  const first = h.ensure(old.signal);
+  let second: Promise<void> | undefined;
+  try {
+    await publishing.opened;
+    old.abort();
+    h.defaultChannels.mockImplementationOnce(async () => {
+      reading.open();
+      await answer.opened;
+      return h.read();
+    });
+    second = h.ensure();
+    await reading.opened;
+    release.open();
+    await first;
+    expect(h.marker()).toEqual({ owed: ["welcome"] });
+  } finally {
+    release.open();
+    answer.open();
+  }
+  await second;
+  expect(h.joins()).toEqual(["general", "welcome"]);
+  expect(h.marker()).toBe("done");
+});
+
+it.each([
+  ["done", "done"],
+  ["nothing (cleared)", null],
+  ["a new admission's pending", "pending"],
+] as const)(
+  "an owed set replaced by %s during the directory read stands",
+  async (_case, marker) => {
+    const answer = gate();
+    const h = harness({ marker: { owed: ["general", "welcome"] } });
+    h.defaultChannels.mockImplementationOnce(async () => {
+      await answer.opened;
+      return h.read();
+    });
+    const run = h.ensure();
+    try {
+      expect(h.defaultChannels).toHaveBeenCalledOnce();
+      if (marker) writeView(scope, "default-channels", marker);
+      else clearView(scope, "default-channels");
+    } finally {
+      answer.open();
+    }
+    await run;
+    expect(h.lifecycle.run).not.toHaveBeenCalled();
+    expect(h.marker()).toBe(marker ?? undefined);
+  },
+);
+
+it("updates the record only under the scope's lock, so another window cannot interleave", async () => {
+  const locks: string[] = [];
+  let held: string | undefined;
+  Object.defineProperty(navigator, "locks", {
+    configurable: true,
+    value: {
+      request: async (name: string, update: () => unknown) => {
+        locks.push(name);
+        held = name;
+        try {
+          return update();
+        } finally {
+          held = undefined;
+        }
+      },
+    },
+  });
+  try {
+    const h = harness({
+      run: async (_action, id) => {
+        if (id === "welcome") throw new Error("connection lost");
+      },
+    });
+    const key = `buzz-view.v1:${JSON.stringify([scope, "default-channels"])}`;
+    const setItem = Storage.prototype.setItem;
+    const writes: (string | undefined)[] = [];
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (
+      this: Storage,
+      name,
+      value,
+    ) {
+      if (name === key) writes.push(held);
+      setItem.call(this, name, value);
+    });
+    await h.ensure();
+    expect(h.marker()).toEqual({ owed: ["welcome"] });
+    // The snapshot and the #general settlement.
+    const lock = `buzz-default-channels:${scope}`;
+    expect(writes).toEqual([lock, lock]);
+    expect(new Set(locks)).toEqual(new Set([lock]));
+  } finally {
+    Reflect.deleteProperty(navigator, "locks");
+  }
 });
 
 it("sends no join until the owed snapshot is stored", async () => {

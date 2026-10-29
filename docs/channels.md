@@ -1273,10 +1273,12 @@ is no longer a flagged public channel or is definitively refused. A rate limit,
 a join that was never sent or leaving Messages before sending keeps it owed, and
 the next launch retries only owed channels the viewer is still not in. If a
 dropped channel cannot be saved, the marker is forgotten rather than left owing
-a channel the viewer may since have left. A run can still be finishing a join
-when a replaced connection starts a newer one, so each run joins only channels
-the saved record still owes, and a result removes only its own channel from
+a channel the viewer may since have left. Runs can overlap, in two windows or
+when a replaced connection starts a newer run while an older one is still
+finishing a join. Each run saves only what the record still owes and joins only
+channels the record still owes, and a result removes only its own channel from
 the record as saved at that moment, never undoing what the other run settled.
+Windows take turns updating the record.
 The marker becomes `done` when nothing is owed. Without a marker nothing runs,
 so upgrading, another device, cleared storage, a recovered claim whose reply
 was lost, and setup without an invite code never re-add channels the viewer

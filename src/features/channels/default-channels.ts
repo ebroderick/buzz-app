@@ -49,17 +49,28 @@ const settles = (error: unknown) =>
     !(error instanceof PublishNotSent) &&
     !(error.reason ?? error.message).startsWith("rate-limited:"));
 
+/** Runs a marker read-modify-write under this scope's lock, so a run in
+ * another of the app's windows cannot interleave between its read and write.
+ * Network waits stay outside; without Web Locks it runs unguarded. */
+function serialized<T>(scope: string, update: () => T): Promise<T> {
+  if (typeof navigator === "undefined" || !navigator.locks)
+    return Promise.resolve(update());
+  return navigator.locks.request(`buzz-default-channels:${scope}`, update);
+}
+
 /** Removes a settled id from the owed set stored now, whichever run stored
  * it; `done`, a cleared marker or a new admission's `pending` stays. False
  * when storage cannot record it. */
 function drop(scope: string, id: string) {
-  const revision = viewRevision(scope, KEY);
-  if (revision === undefined) return false;
-  const owed = readMarker(scope);
-  if (typeof owed !== "object" || !owed.includes(id)) return true;
-  const rest = owed.filter((other) => other !== id);
-  const value = rest.length ? { owed: rest } : "done";
-  return replaceView(scope, KEY, revision, value) === "saved";
+  return serialized(scope, () => {
+    const revision = viewRevision(scope, KEY);
+    if (revision === undefined) return false;
+    const owed = readMarker(scope);
+    if (typeof owed !== "object" || !owed.includes(id)) return true;
+    const rest = owed.filter((other) => other !== id);
+    const value = rest.length ? { owed: rest } : "done";
+    return replaceView(scope, KEY, revision, value) === "saved";
+  });
 }
 
 /** The relay joins new members into its `auto_join` channels itself, once, at
@@ -73,13 +84,15 @@ function drop(scope: string, id: string) {
  * listed (already joined, archived or unflagged) or was definitively refused;
  * the marker is `done` when nothing is owed. Nothing is sent until the owed
  * set is stored, and a drop that cannot be stored forgets the marker, so a
- * channel this fallback may have joined is never owed again. Runs can overlap
- * when a session replacement starts a successor while a cancelled publish is
- * still pending, so storage, not either run, holds what is owed: a run joins
+ * channel this fallback may have joined is never owed again. Runs can overlap,
+ * in another window or when a session replacement starts a successor while a
+ * cancelled publish is still pending, so storage, not either run, holds what
+ * is owed: a snapshot owes only what the stored marker still owes, a run joins
  * only ids still stored as owed, and a settlement removes just its id from the
- * owed set stored then, keeping the other run's progress. No marker means no
- * fresh admission on this device (an upgrade, another device, cleared storage
- * or an open community), so nothing runs and a member's earlier leave stands.
+ * owed set stored then, keeping the other run's progress; windows take turns
+ * at the snapshot and each settlement. No marker means no fresh admission on
+ * this device (an upgrade, another device, cleared storage or an open
+ * community), so nothing runs and a member's earlier leave stands.
  */
 export async function ensureDefaultChannels({
   queries,
@@ -93,8 +106,7 @@ export async function ensureDefaultChannels({
   signal: AbortSignal;
 }): Promise<void> {
   const revision = viewRevision(scope, KEY);
-  const marker = readMarker(scope);
-  if (!marker) return;
+  if (!readMarker(scope)) return;
   if (!lifecycle.available || !queries.defaultChannels) return;
   let missing: readonly string[];
   try {
@@ -102,15 +114,22 @@ export async function ensureDefaultChannels({
   } catch {
     return;
   }
-  const candidates =
-    marker === "pending"
-      ? missing
-      : marker.filter((id) => missing.includes(id));
-  // Send nothing until the owed set is stored, over the marker read above: a
-  // stale `pending` or owed set would owe this run's joins again, and a
-  // successor's snapshot stands.
-  const snapshot = candidates.length ? { owed: candidates } : "done";
-  if (replaceView(scope, KEY, revision, snapshot) !== "saved") return;
+  // Send nothing until the owed set is stored. Another run may have stored or
+  // settled part of it during the read, so owe only what storage still owes;
+  // `pending` counts only if it is the one read above, and `done`, a cleared
+  // marker or a new admission's `pending` stands.
+  const candidates = await serialized(scope, () => {
+    const stored = readMarker(scope);
+    const owed =
+      stored === "pending"
+        ? viewRevision(scope, KEY) === revision && missing
+        : stored?.filter((id) => missing.includes(id));
+    if (!owed) return;
+    return writeView(scope, KEY, owed.length ? { owed } : "done")
+      ? owed
+      : undefined;
+  });
+  if (!candidates) return;
   // Sequential: the lifecycle owner is single-flight, and its join pre-read
   // already sends nothing for a channel the relay added meanwhile. Each settled
   // id is dropped at once, so a later leave of it stands even if this run stops.
@@ -128,7 +147,7 @@ export async function ensureDefaultChannels({
         continue;
       }
     }
-    if (drop(scope, id)) continue;
+    if (await drop(scope, id)) continue;
     // Storage still owes a channel that may have joined: give up the rest
     // rather than rejoin it after a leave.
     try {
