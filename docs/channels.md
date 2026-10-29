@@ -1276,8 +1276,9 @@ dropped channel cannot be saved, the marker is forgotten rather than left owing
 a channel the viewer may since have left. Runs can overlap, in two windows or
 when a replaced connection starts a newer run while an older one is still
 finishing a join. Each run saves only what the record still owes and joins only
-channels the record still owes, and a result removes only its own channel from
-the record as saved at that moment, never undoing what the other run settled.
+channels the record still owes, checking again just before each join is sent,
+and a result removes only its own channel from the record as saved at that
+moment, never undoing what the other run settled.
 Windows take turns updating the record.
 The marker becomes `done` when nothing is owed. Without a marker nothing runs,
 so upgrading, another device, cleared storage, a recovered claim whose reply

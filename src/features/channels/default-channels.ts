@@ -38,6 +38,12 @@ function readMarker(scope: string): "pending" | readonly string[] | undefined {
     : undefined;
 }
 
+/** Whether the stored marker still owes `id`. */
+function owes(scope: string, id: string) {
+  const owed = readMarker(scope);
+  return typeof owed === "object" && owed.includes(id);
+}
+
 /** A join settles once it may have reached the relay (unconfirmed, which
  * includes a cancellation after publishing) or was definitively refused.
  * Failures known to precede publication may succeed later: a rate limit, a
@@ -87,12 +93,13 @@ function drop(scope: string, id: string) {
  * channel this fallback may have joined is never owed again. Runs can overlap,
  * in another window or when a session replacement starts a successor while a
  * cancelled publish is still pending, so storage, not either run, holds what
- * is owed: a snapshot owes only what the stored marker still owes, a run joins
- * only ids still stored as owed, and a settlement removes just its id from the
- * owed set stored then, keeping the other run's progress; windows take turns
- * at the snapshot and each settlement. No marker means no fresh admission on
- * this device (an upgrade, another device, cleared storage or an open
- * community), so nothing runs and a member's earlier leave stands.
+ * is owed: a snapshot owes only what the stored marker still owes, a join
+ * starts and publishes only while storage still owes its id, and a settlement
+ * removes just its id from the owed set stored then, keeping the other run's
+ * progress; windows take turns at the snapshot and each settlement. No marker
+ * means no fresh admission on this device (an upgrade, another device, cleared
+ * storage or an open community), so nothing runs and a member's earlier leave
+ * stands.
  */
 export async function ensureDefaultChannels({
   queries,
@@ -135,12 +142,13 @@ export async function ensureDefaultChannels({
   // id is dropped at once, so a later leave of it stands even if this run stops.
   for (const id of candidates) {
     if (signal.aborted) return;
-    // Another run may have settled it, or finished.
-    const owed = readMarker(scope);
-    if (typeof owed !== "object") return;
-    if (!owed.includes(id)) continue;
+    // Another run may have settled it, or finished. Signing can wait while
+    // another window joins it and the member leaves, so the lifecycle owner
+    // checks again right before publishing.
+    const owed = () => owes(scope, id);
+    if (!owed()) continue;
     try {
-      await lifecycle.run("join", id, signal);
+      await lifecycle.run("join", id, signal, owed);
     } catch (error) {
       if (!settles(error)) {
         if (signal.aborted) return;

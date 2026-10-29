@@ -41,8 +41,10 @@ function harness({
   joined?: readonly string[];
   ids?: readonly string[];
   available?: boolean;
-  /** `publish` records a membership the relay applied even if `run` then
-   * throws, as for an accepted join whose confirmation was lost. */
+  /** The owner's work before publishing; when it returns, the join publishes
+   * unless `active` declines, as in the lifecycle owner. `publish` records a
+   * membership the relay applied even if `run` then throws, as for an accepted
+   * join whose confirmation was lost. */
   run?: (
     action: string,
     id: string,
@@ -58,10 +60,19 @@ function harness({
   const defaultChannels = vi.fn(read);
   const lifecycle = {
     available,
-    run: vi.fn(async (action: string, id: string, signal?: AbortSignal) => {
-      await run(action, id, signal, () => roster.add(id));
-      roster.add(id);
-    }),
+    run: vi.fn(
+      async (
+        action: string,
+        id: string,
+        signal?: AbortSignal,
+        active?: () => boolean,
+      ) => {
+        await run(action, id, signal, () => roster.add(id));
+        if (active?.() === false)
+          throw new DOMException("Channel action cancelled", "AbortError");
+        roster.add(id);
+      },
+    ),
   };
   return {
     defaultChannels,
@@ -69,6 +80,7 @@ function harness({
     read,
     lifecycle,
     marker: () => readView(scope, "default-channels", undefined),
+    members: () => [...roster],
     joins: () => lifecycle.run.mock.calls.map(([, id]) => id),
     leave: (id: string) => roster.delete(id),
     ensure: (signal = new AbortController().signal) =>
@@ -396,6 +408,34 @@ it("does not join a channel the other run settled meanwhile, so leaving it stand
   expect(h.marker()).toBe("done");
 });
 
+it("publishes nothing for a join held while signing once another window settled it, so leaving it stands", async () => {
+  const held = new AbortController();
+  const signing = gate();
+  const signed = gate();
+  const h = harness({
+    ids: ["general"],
+    run: async (_action, _id, signal) => {
+      if (signal !== held.signal) return;
+      signing.open();
+      await signed.opened;
+    },
+  });
+  const first = h.ensure(held.signal);
+  try {
+    await signing.opened;
+    // Another window joins #general and marks done, then the member leaves.
+    await h.ensure();
+    expect(h.marker()).toBe("done");
+    h.leave("general");
+  } finally {
+    signed.open();
+  }
+  await first;
+  expect(h.joins()).toEqual(["general", "general"]);
+  expect(h.members()).toEqual([]);
+  expect(h.marker()).toBe("done");
+});
+
 it("a successor still joins what is owed when the other run settles during its directory read", async () => {
   const old = new AbortController();
   const publishing = gate();
@@ -506,6 +546,35 @@ it("updates the record only under the scope's lock, so another window cannot int
     Reflect.deleteProperty(navigator, "locks");
   }
 });
+
+it.each([
+  ["the snapshot", 1],
+  ["a settlement", 2],
+] as const)(
+  "%s reads the record once it holds the lock, keeping what another window settled while it waited",
+  async (_case, request) => {
+    const h = harness({ marker: { owed: ["general", "welcome"] } });
+    let requests = 0;
+    Object.defineProperty(navigator, "locks", {
+      configurable: true,
+      value: {
+        request: async (_name: string, update: () => unknown) => {
+          // Another window held the lock first and settled #welcome.
+          if (++requests === request)
+            writeView(scope, "default-channels", { owed: ["general"] });
+          return update();
+        },
+      },
+    });
+    try {
+      await h.ensure();
+      expect(h.joins()).toEqual(["general"]);
+      expect(h.marker()).toBe("done");
+    } finally {
+      Reflect.deleteProperty(navigator, "locks");
+    }
+  },
+);
 
 it("sends no join until the owed snapshot is stored", async () => {
   const h = harness();
