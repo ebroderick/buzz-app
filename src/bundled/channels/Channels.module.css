@@ -882,6 +882,9 @@ html[data-keyboard-navigation]
 .settingsSwitch > dd > [role="alert"] {
   grid-column: 1 / -1;
 }
+.settingsSwitch[data-disabled] > dt {
+  color: var(--text-unavailable);
+}
 .settingsId {
   overflow-wrap: anywhere;
 }

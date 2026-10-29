@@ -9,7 +9,7 @@ import {
   ChannelLifecycleUnconfirmed,
   type ChannelLifecycleCapability,
 } from "../../features/relay/channel-lifecycle";
-import { PublishRejected } from "../../features/relay/outbox";
+import { PublishNotSent, PublishRejected } from "../../features/relay/outbox";
 import type { Role } from "../../features/communities/roster";
 import type { CommunityMembership } from "../moderation/membership";
 
@@ -495,6 +495,12 @@ it.each([
     ),
     "Saved, but not confirmed yet. Try again to check.",
   ],
+  [
+    "a retry for a rate limit, not a refusal",
+    // As the transport maps a NIP-01 `rate-limited:` OK reply.
+    new PublishNotSent("rate-limited: slow down"),
+    "Not sent. Try again.",
+  ],
 ])(
   "reports %s and lets the switch be tried again",
   async (_, failure, copy) => {
@@ -506,11 +512,17 @@ it.each([
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toBe(copy);
     expectDefinitionRows(alert);
+    expect(autoJoinSwitch()).toHaveAccessibleDescription(
+      `New community members are added to this channel automatically. ${copy}`,
+    );
     expect(autoJoinSwitch()).not.toHaveAttribute("aria-disabled");
     expect(autoJoinSwitch()).not.toBeChecked();
     await user.click(autoJoinSwitch());
     await waitFor(() =>
       expect(screen.queryByRole("alert")).not.toBeInTheDocument(),
+    );
+    expect(autoJoinSwitch()).toHaveAccessibleDescription(
+      "New community members are added to this channel automatically.",
     );
     expect(capability.run).toHaveBeenCalledTimes(2);
   },

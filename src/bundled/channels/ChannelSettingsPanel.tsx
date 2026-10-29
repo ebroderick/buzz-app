@@ -14,7 +14,7 @@ import {
   ChannelLifecycleUnconfirmed,
   type ChannelLifecycleCapability,
 } from "../../features/relay/channel-lifecycle";
-import { PublishRejected } from "../../features/relay/outbox";
+import { PublishNotSent, PublishRejected } from "../../features/relay/outbox";
 import { managesCommunity } from "../../features/communities/roster";
 import type { CommunityMembership } from "../moderation/membership";
 import { channelIcon } from "../../features/channels/channel-icon";
@@ -262,7 +262,9 @@ function AutoJoinSetting({
   useEffect(() => () => operation.current?.abort(), []);
   const control = useId();
   const description = useId();
+  const alert = useId();
   if (!managesCommunity(role)) return null;
+  const disabled = pending || !lifecycle.available;
   const toggle = async (enabled: boolean) => {
     if (operation.current) return;
     const controller = new AbortController();
@@ -281,12 +283,15 @@ function AutoJoinSetting({
           // Setting the same value again is idempotent, so retrying is the check.
           error instanceof ChannelLifecycleUnconfirmed
             ? "Saved, but not confirmed yet. Try again to check."
-            : error instanceof PublishRejected
-              ? (error.reason ??
-                "Only community owners and admins can change this.")
-              : error instanceof Error
-                ? error.message
-                : String(error),
+            : // A rate limit or a write that never left this device, not a refusal.
+              error instanceof PublishNotSent
+              ? "Not sent. Try again."
+              : error instanceof PublishRejected
+                ? (error.reason ??
+                  "Only community owners and admins can change this.")
+                : error instanceof Error
+                  ? error.message
+                  : String(error),
         );
     } finally {
       operation.current = undefined;
@@ -296,7 +301,10 @@ function AutoJoinSetting({
   // A row of the details list: the label is its term, and the description,
   // switch and any error are its definition.
   return (
-    <div className={styles.settingsSwitch}>
+    <div
+      className={styles.settingsSwitch}
+      data-disabled={disabled || undefined}
+    >
       <dt>
         <label htmlFor={control}>Starter channel for new members</label>
       </dt>
@@ -307,14 +315,14 @@ function AutoJoinSetting({
         <Switch
           id={control}
           aria-label="Starter channel for new members"
-          aria-describedby={description}
+          aria-describedby={error ? `${description} ${alert}` : description}
           checked={!!channel.autoJoin}
-          disabled={pending || !lifecycle.available}
+          disabled={disabled}
           aria-busy={pending || undefined}
           onCheckedChange={(enabled) => void toggle(enabled)}
         />
         {error && (
-          <p role="alert" className="text-danger">
+          <p id={alert} role="alert" className="text-danger">
             {error}
           </p>
         )}
