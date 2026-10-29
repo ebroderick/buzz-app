@@ -2120,6 +2120,41 @@ describe("auto-join switch", () => {
     },
   );
 
+  it("signs on, off, on within one second as three distinct events", async () => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1_700_000_000_000);
+    const h = publicStream();
+    // The relay deduplicates by event id before applying metadata.
+    const apply = h.publish.getMockImplementation();
+    assert(apply);
+    const seen = new Set<string>();
+    h.publish.mockImplementation(async (event: RelayEvent) => {
+      if (seen.has(event.id)) return;
+      seen.add(event.id);
+      await apply(event);
+    });
+    try {
+      for (const action of [
+        "auto-join-on",
+        "auto-join-off",
+        "auto-join-on",
+      ] as const)
+        await h.owner.capability.run(action, id);
+      const published = h.publish.mock.calls.map(([event]) => event);
+      expect(new Set(published.map((event) => event.id)).size).toBe(3);
+      expect(published.map((event) => event.created_at)).toEqual([
+        1_700_000_000, 1_700_000_001, 1_700_000_002,
+      ]);
+      expect(
+        h.acceptDiscovery.mock.lastCall?.[0]?.[0]?.tags.some(
+          ([key]: string[]) => key === "auto_join",
+        ),
+      ).toBe(true);
+    } finally {
+      clock.mockRestore();
+      h.owner.dispose();
+    }
+  });
+
   it.each([
     [[["public"], ["private"]], "stream"],
     [[], "stream"],
