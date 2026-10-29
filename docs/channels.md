@@ -1273,16 +1273,17 @@ is no longer a flagged public channel or is definitively refused. A rate limit,
 a join that was never sent or leaving Messages before sending keeps it owed, and
 the next launch retries only owed channels the viewer is still not in. If a
 dropped channel cannot be saved, the marker is forgotten rather than left owing
-a channel the viewer may since have left. A run stops once a newer run (after
-the connection was replaced) has changed the marker, so a late result from the
-older run never restores a channel the newer one settled. The marker becomes
-`done` when nothing is owed. Without a marker nothing runs, so upgrading,
-another device, cleared storage, a recovered claim whose reply was lost, and
-setup without an invite code never re-add channels the viewer left. Open
-communities, which require no claim, therefore get no client fallback: the
-relay advertises the flag there but auto-joins nobody, and the client cannot
-tell a newcomer from a returning member. Leaving the community purges the marker
-with the rest of the scope.
+a channel the viewer may since have left. A run can still be finishing a join
+when a replaced connection starts a newer one, so each run joins only channels
+the saved record still owes, and a result removes only its own channel from
+the record as saved at that moment, never undoing what the other run settled.
+The marker becomes `done` when nothing is owed. Without a marker nothing runs,
+so upgrading, another device, cleared storage, a recovered claim whose reply
+was lost, and setup without an invite code never re-add channels the viewer
+left. Open communities, which require no claim, therefore get no client
+fallback: the relay advertises the flag there but auto-joins nobody, and the
+client cannot tell a newcomer from a returning member. Leaving the community
+purges the marker with the rest of the scope.
 
 A cached roster can display previously downloaded, reverified history for up to
 24 hours. It cannot authorize head/history reads, unread evidence, typing or

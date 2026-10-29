@@ -22,6 +22,13 @@ const storageFull = () =>
     throw new DOMException("Storage is full", "QuotaExceededError");
   });
 
+/** A held step: `opened` resolves once `open` is called. */
+function gate() {
+  let open!: () => void;
+  const opened = new Promise<void>((resolve) => (open = resolve));
+  return { open, opened };
+}
+
 function harness({
   marker = "pending",
   joined = [],
@@ -233,22 +240,20 @@ it("settles a join cancelled after publishing, then stops", async () => {
 
 it("a run cancelled while publishing leaves a successor's settlement standing", async () => {
   const old = new AbortController();
-  let published!: () => void;
-  const publishing = new Promise<void>((resolve) => (published = resolve));
-  let release!: () => void;
-  const held = new Promise<void>((resolve) => (release = resolve));
+  const publishing = gate();
+  const release = gate();
   const h = harness({
     run: async (_action, _id, signal, publish) => {
       if (signal !== old.signal) return;
       publish();
-      published();
-      await held;
+      publishing.open();
+      await release.opened;
       throw new ChannelLifecycleUnconfirmed(old.signal.reason);
     },
   });
   const first = h.ensure(old.signal);
   try {
-    await publishing;
+    await publishing.opened;
     expect(h.marker()).toEqual({ owed: ["general", "welcome"] });
     // The session is replaced while the old #general publish is in flight.
     old.abort();
@@ -256,13 +261,135 @@ it("a run cancelled while publishing leaves a successor's settlement standing", 
     expect(h.joins()).toEqual(["general", "welcome"]);
     expect(h.marker()).toBe("done");
   } finally {
-    release();
+    release.open();
   }
   await first;
   expect(h.marker()).toBe("done");
   h.leave("welcome");
   await h.ensure();
   expect(h.joins()).toEqual(["general", "welcome"]);
+});
+
+it("a late settlement keeps a successor's partial progress, so leaving either stands", async () => {
+  const old = new AbortController();
+  const publishing = gate();
+  const release = gate();
+  const h = harness({
+    run: async (_action, id, signal, publish) => {
+      if (signal === old.signal) {
+        publishing.open();
+        await release.opened;
+        // The cancelled #general publish takes effect only now.
+        publish();
+        throw new ChannelLifecycleUnconfirmed(old.signal.reason);
+      }
+      // A failure before publishing keeps #general owed.
+      if (id === "general")
+        throw new Error("Unexpected channel state response");
+    },
+  });
+  const first = h.ensure(old.signal);
+  try {
+    await publishing.opened;
+    old.abort();
+    await h.ensure();
+    expect(h.joins()).toEqual(["general", "general", "welcome"]);
+    expect(h.marker()).toEqual({ owed: ["general"] });
+  } finally {
+    release.open();
+  }
+  await first;
+  expect(h.marker()).toBe("done");
+  h.leave("general");
+  h.leave("welcome");
+  await h.ensure();
+  expect(h.joins()).toEqual(["general", "general", "welcome"]);
+});
+
+it("keeps both runs' settlements when the successor stored the same owed set", async () => {
+  const old = new AbortController();
+  const publishing = gate();
+  const releaseOld = gate();
+  const joining = gate();
+  const releaseNew = gate();
+  const h = harness({
+    run: async (_action, id, signal, publish) => {
+      if (signal === old.signal) {
+        publishing.open();
+        await releaseOld.opened;
+        publish();
+        throw new ChannelLifecycleUnconfirmed(old.signal.reason);
+      }
+      if (id === "general")
+        throw new Error("Unexpected channel state response");
+      joining.open();
+      await releaseNew.opened;
+    },
+  });
+  const first = h.ensure(old.signal);
+  let second: Promise<void> | undefined;
+  try {
+    await publishing.opened;
+    old.abort();
+    second = h.ensure();
+    await joining.opened;
+    // The successor rewrote the same owed set, then skipped #general.
+    expect(h.marker()).toEqual({ owed: ["general", "welcome"] });
+    releaseOld.open();
+    await first;
+    expect(h.marker()).toEqual({ owed: ["welcome"] });
+  } finally {
+    releaseOld.open();
+    releaseNew.open();
+  }
+  await second;
+  expect(h.marker()).toBe("done");
+  h.leave("welcome");
+  await h.ensure();
+  expect(h.joins()).toEqual(["general", "general", "welcome"]);
+});
+
+it("does not join a channel the other run settled meanwhile, so leaving it stands", async () => {
+  const old = new AbortController();
+  const publishing = gate();
+  const releaseOld = gate();
+  const joining = gate();
+  const releaseNew = gate();
+  const h = harness({
+    run: async (_action, id, signal, publish) => {
+      if (id === "general") {
+        if (signal === old.signal)
+          throw new Error("Unexpected channel state response");
+        joining.open();
+        await releaseNew.opened;
+        return;
+      }
+      if (signal !== old.signal) return;
+      publishing.open();
+      await releaseOld.opened;
+      publish();
+      throw new ChannelLifecycleUnconfirmed(old.signal.reason);
+    },
+  });
+  const first = h.ensure(old.signal);
+  let second: Promise<void> | undefined;
+  try {
+    await publishing.opened;
+    old.abort();
+    second = h.ensure();
+    await joining.opened;
+    releaseOld.open();
+    await first;
+    expect(h.marker()).toEqual({ owed: ["general"] });
+    // The member leaves #welcome before the successor reaches it.
+    h.leave("welcome");
+  } finally {
+    releaseOld.open();
+    releaseNew.open();
+  }
+  await second;
+  expect(h.joins()).toEqual(["general", "welcome", "general"]);
+  expect(h.marker()).toBe("done");
 });
 
 it("sends no join until the owed snapshot is stored", async () => {

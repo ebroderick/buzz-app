@@ -49,6 +49,19 @@ const settles = (error: unknown) =>
     !(error instanceof PublishNotSent) &&
     !(error.reason ?? error.message).startsWith("rate-limited:"));
 
+/** Removes a settled id from the owed set stored now, whichever run stored
+ * it; `done`, a cleared marker or a new admission's `pending` stays. False
+ * when storage cannot record it. */
+function drop(scope: string, id: string) {
+  const revision = viewRevision(scope, KEY);
+  if (revision === undefined) return false;
+  const owed = readMarker(scope);
+  if (typeof owed !== "object" || !owed.includes(id)) return true;
+  const rest = owed.filter((other) => other !== id);
+  const value = rest.length ? { owed: rest } : "done";
+  return replaceView(scope, KEY, revision, value) === "saved";
+}
+
 /** The relay joins new members into its `auto_join` channels itself, once, at
  * the claim. This is the backstop for an add that failed there. The first run
  * after a `pending` marker (written by `markDefaultChannelsPending`) records
@@ -60,12 +73,14 @@ const settles = (error: unknown) =>
  * listed (already joined, archived or unflagged) or was definitively refused;
  * the marker is `done` when nothing is owed. Nothing is sent until the owed
  * set is stored, and a drop that cannot be stored forgets the marker, so a
- * channel this fallback may have joined is never owed again. A run stops once
- * another run (a successor after a session replacement) has changed the
- * marker, so a late settlement never restores what that run already settled.
- * No marker means no fresh admission on this device (an upgrade, another
- * device, cleared storage or an open community), so nothing runs and a
- * member's earlier leave stands. */
+ * channel this fallback may have joined is never owed again. Runs can overlap
+ * when a session replacement starts a successor while a cancelled publish is
+ * still pending, so storage, not either run, holds what is owed: a run joins
+ * only ids still stored as owed, and a settlement removes just its id from the
+ * owed set stored then, keeping the other run's progress. No marker means no
+ * fresh admission on this device (an upgrade, another device, cleared storage
+ * or an open community), so nothing runs and a member's earlier leave stands.
+ */
 export async function ensureDefaultChannels({
   queries,
   lifecycle,
@@ -77,7 +92,7 @@ export async function ensureDefaultChannels({
   scope: string;
   signal: AbortSignal;
 }): Promise<void> {
-  let revision = viewRevision(scope, KEY);
+  const revision = viewRevision(scope, KEY);
   const marker = readMarker(scope);
   if (!marker) return;
   if (!lifecycle.available || !queries.defaultChannels) return;
@@ -91,23 +106,20 @@ export async function ensureDefaultChannels({
     marker === "pending"
       ? missing
       : marker.filter((id) => missing.includes(id));
-  let owed = candidates;
-  // Only over the marker this run last read or stored: a successor owns any
-  // other value.
-  const save = () => {
-    const value = owed.length ? { owed } : "done";
-    const result = replaceView(scope, KEY, revision, value);
-    if (result === "saved") revision = JSON.stringify(value);
-    return result;
-  };
-  // Send nothing until the owed set is stored: a stale `pending` or owed set
-  // would owe this run's joins again.
-  if (save() !== "saved") return;
+  // Send nothing until the owed set is stored, over the marker read above: a
+  // stale `pending` or owed set would owe this run's joins again, and a
+  // successor's snapshot stands.
+  const snapshot = candidates.length ? { owed: candidates } : "done";
+  if (replaceView(scope, KEY, revision, snapshot) !== "saved") return;
   // Sequential: the lifecycle owner is single-flight, and its join pre-read
   // already sends nothing for a channel the relay added meanwhile. Each settled
   // id is dropped at once, so a later leave of it stands even if this run stops.
   for (const id of candidates) {
     if (signal.aborted) return;
+    // Another run may have settled it, or finished.
+    const owed = readMarker(scope);
+    if (typeof owed !== "object") return;
+    if (!owed.includes(id)) continue;
     try {
       await lifecycle.run("join", id, signal);
     } catch (error) {
@@ -116,10 +128,7 @@ export async function ensureDefaultChannels({
         continue;
       }
     }
-    owed = owed.filter((other) => other !== id);
-    const saved = save();
-    if (saved === "saved") continue;
-    if (saved === "changed") return;
+    if (drop(scope, id)) continue;
     // Storage still owes a channel that may have joined: give up the rest
     // rather than rejoin it after a leave.
     try {
