@@ -1257,19 +1257,24 @@ the ordinary cold connection flow; unavailable/corrupt storage never grants acce
 
 With no saved selection, Messages opens the first channel the relay flags
 `auto_join` (its default for new members), then the first non-Solo channel; an
-explicit empty route bypasses both. The relay normally joins a new member into
-its `auto_join` channels during the invite claim, and the resulting membership
-hints populate the sidebar live. `features/channels/default-channels.ts` is the
-backstop for open or old relays and failed adds: once the live roster is
-verified and empty, it reads the public directory for flagged channels and
-sends one kind 9021 join per missing channel through the lifecycle owner. It
-runs at most once per community, viewer and device: the `default-channels`
-view-state marker becomes `done` once the directory read was complete and every
-candidate settled (joined or definitively rejected), or once the verified roster
-turns out non-empty, and suppresses the fallback thereafter. A member who left
-every default channel may therefore be re-added once on a device that has never
-marked the scope done. Leaving the community purges the marker with the rest of
-the scope.
+explicit empty route bypasses both. The relay joins a new member into its
+`auto_join` channels once, during the invite claim, and the resulting membership
+hints populate the sidebar live; it never re-adds them, so a later leave stands.
+`features/channels/default-channels.ts` backs up an add that failed at the
+claim, and only then: when the claim made on this device returned `joined`
+(never `already_member`), the `default-channels` view-state marker is `pending`,
+and once the live roster is verified Messages joins each flagged public channel
+the viewer is not in through the lifecycle owner. The marker becomes `done` only
+when the directory read was complete and every candidate either joined or was
+definitively refused; a rate limit, an unsent or unconfirmed join, a capped
+directory read or leaving Messages keeps it `pending`, and the next launch joins
+only what is still missing. Without a marker nothing runs, so upgrading,
+another device, cleared storage, a recovered claim whose reply was lost, and
+setup without an invite code never re-add channels the viewer left. Open
+communities, which require no claim, therefore get no client fallback: the
+relay advertises the flag there but auto-joins nobody, and the client cannot
+tell a newcomer from a returning member. Leaving the community purges the marker
+with the rest of the scope.
 
 A cached roster can display previously downloaded, reverified history for up to
 24 hours. It cannot authorize head/history reads, unread evidence, typing or

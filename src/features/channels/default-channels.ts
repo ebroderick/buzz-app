@@ -1,40 +1,51 @@
 import { useEffect, useSyncExternalStore } from "react";
 import type { ChannelLifecycleCapability } from "../relay/channel-lifecycle";
 import type { ChannelQueries } from "../relay/contracts";
-import { PublishRejected } from "../relay/outbox";
+import { PublishNotSent, PublishRejected } from "../relay/outbox";
+import { relayPartition } from "../relay/partition";
 import { useChannelList } from "../relay/react";
 import type { RelaySession } from "../relay/session";
 import { readView, writeView } from "../../shared/view-state";
 
-/** `done` once per community, viewer and device; leaving the community purges
- * it with the rest of the view scope, so a rejoin starts fresh. */
+/** `pending` from a fresh admission until the fallback settles, then `done`;
+ * leaving the community purges it with the rest of the view scope. */
 const KEY = "default-channels";
 
-/** The relay joins new members into its `auto_join` channels itself. This is
- * the backstop for open or old relays and failed adds: with a verified-empty
- * roster, send 9021 for each flagged public channel, at most once per
- * community, viewer and device. A non-empty roster spends the one shot too,
- * so leaving every channel later never re-adds them on this device; a device
- * that has never marked the scope done may re-add them once. The marker is
- * written only when the directory read was complete and every candidate
- * settled with success or a definitive relay rejection; anything else retries
- * next time. */
+/** A claim that made this viewer a new member (`joined`, never
+ * `already_member`): the fallback may reconcile the community's default
+ * channels once, on this device. */
+export function markDefaultChannelsPending(origin: string, viewer: string) {
+  writeView(relayPartition(origin, viewer), KEY, "pending");
+}
+
+/** A definitive refusal settles a candidate; a rate limit, or a write that
+ * never left this device, may succeed later. */
+const refused = (error: unknown) =>
+  error instanceof PublishRejected &&
+  !(error instanceof PublishNotSent) &&
+  !(error.reason ?? error.message).startsWith("rate-limited:");
+
+/** The relay joins new members into its `auto_join` channels itself, once, at
+ * the claim. This is the backstop for an add that failed there: only while the
+ * scope is `pending` (written by `markDefaultChannelsPending`), send 9021 for
+ * each flagged public channel the verified roster lacks. No marker means no
+ * fresh admission on this device (an upgrade, another device, cleared storage
+ * or an open community), so nothing runs and a member's earlier leave stands.
+ * The marker becomes `done` only when the directory read was complete and
+ * every candidate settled with success or a definitive relay refusal; anything
+ * else leaves it `pending`, and the next run joins what is still missing. */
 export async function ensureDefaultChannels({
   queries,
   lifecycle,
   scope,
   signal,
 }: {
-  queries: Pick<ChannelQueries, "list" | "defaultChannels">;
+  queries: Pick<ChannelQueries, "defaultChannels">;
   lifecycle: Pick<ChannelLifecycleCapability, "available" | "run">;
   scope: string;
   signal: AbortSignal;
 }): Promise<void> {
-  if (readView(scope, KEY, undefined) === "done") return;
-  if (queries.list().channels.length) {
-    writeView(scope, KEY, "done");
-    return;
-  }
+  if (readView(scope, KEY, undefined) !== "pending") return;
   if (!lifecycle.available || !queries.defaultChannels) return;
   let ids: readonly string[];
   let partial: boolean;
@@ -43,17 +54,18 @@ export async function ensureDefaultChannels({
   } catch {
     return;
   }
-  // A capped directory page may hide flagged channels; leave the shot unspent.
+  // A capped directory page may hide flagged channels; stay pending.
   let settled = !partial;
-  // Sequential: the lifecycle owner is single-flight, and its join pre-read
-  // already sends nothing for a channel the relay added meanwhile.
+  // Joined channels are not candidates, so a resumed run sends only what is
+  // still missing. Sequential: the lifecycle owner is single-flight, and its
+  // join pre-read already sends nothing for a channel the relay added meanwhile.
   for (const id of ids) {
     if (signal.aborted) return;
     try {
       await lifecycle.run("join", id, signal);
     } catch (error) {
       if (signal.aborted) return;
-      if (!(error instanceof PublishRejected)) settled = false;
+      if (!refused(error)) settled = false;
     }
   }
   if (settled) writeView(scope, KEY, "done");

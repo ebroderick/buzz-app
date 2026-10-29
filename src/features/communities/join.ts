@@ -35,6 +35,8 @@ export type Admission = {
   /** The journal record to finish with the membership; absent without a journal. */
   entry?: PendingJoin;
   found: Awaited<ReturnType<typeof inspectProfile>>;
+  /** This claim made the key a new member (`joined`, never `already_member`). */
+  joined?: true;
 };
 
 /**
@@ -43,7 +45,9 @@ export type Admission = {
  * this key, even once its invite expired); otherwise journal the join before
  * any remote effect, so a storage failure blocks the claim, then accept the
  * policy, claim the code (when given) and prove admission with the signed
- * profile read. `undefined` means a `current` fence stopped the caller.
+ * profile read. `joined` reports a claim that admitted a new member; a
+ * recovered entry or a code-less admission cannot tell, so it is absent.
+ * `undefined` means a `current` fence stopped the caller.
  */
 export async function admitCommunity({
   community,
@@ -72,6 +76,7 @@ export async function admitCommunity({
     if (found) return { found, entry: pending };
   }
   const transaction = journal?.begin(community);
+  let joined = false;
   if (code.trim()) {
     const receipt = policy
       ? (
@@ -97,11 +102,16 @@ export async function admitCommunity({
     });
     if (!["joined", "already_member"].includes(claim.status))
       throw new Error("Membership was not confirmed");
+    joined = claim.status === "joined";
   }
   if (!current(transaction)) return undefined;
   const found = await inspectProfile(community);
   if (!current(transaction)) return undefined;
-  return { found, ...(transaction ? { entry: transaction } : {}) };
+  return {
+    found,
+    ...(transaction ? { entry: transaction } : {}),
+    ...(joined ? { joined: true as const } : {}),
+  };
 }
 
 /**

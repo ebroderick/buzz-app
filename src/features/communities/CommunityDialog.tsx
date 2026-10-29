@@ -18,6 +18,7 @@ import { CommunitySignIn } from "../federated-identity/CommunitySignIn";
 import type { FederatedIdentity } from "../federated-identity/service";
 import { OnboardingBack } from "../identity/OnboardingBack";
 import { OnboardingScreen } from "../identity/OnboardingScreen";
+import { markDefaultChannelsPending } from "../channels/default-channels";
 import styles from "./Communities.module.css";
 
 export function CommunityDialog({
@@ -194,7 +195,12 @@ export function CommunityDialog({
           consent: { adult, agreed },
           current,
         });
-        if (admission) showProfile(admission.found, admission.entry);
+        if (!admission) return;
+        // The relay auto-joins default channels at this claim; Messages backs
+        // it up once. Marked now, so a later `already_member` reclaim keeps it.
+        if (admission.joined && destination && client.viewer)
+          markDefaultChannelsPending(destination.url, client.viewer);
+        showProfile(admission.found, admission.entry);
       });
     } else {
       if (!profile.name.trim()) return;

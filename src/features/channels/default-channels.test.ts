@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
-import type { ChannelList, ChannelSummary } from "../relay/contracts";
-import { PublishRejected } from "../relay/outbox";
+import type { ChannelList } from "../relay/contracts";
+import { PublishNotSent, PublishRejected } from "../relay/outbox";
 import { ChannelLifecycleUnconfirmed } from "../relay/channel-lifecycle";
 import { relayPartition } from "../relay/partition";
 import { readView, writeView } from "../../shared/view-state";
@@ -11,35 +11,47 @@ import { ensureDefaultChannels, useDefaultChannels } from "./default-channels";
 const viewer = "a".repeat(64);
 const origin = "https://relay.test";
 const scope = relayPartition(origin, viewer);
-const general = { id: "general", name: "General" } as ChannelSummary;
 afterEach(() => localStorage.clear());
 
 function harness({
-  marker,
-  channels = [],
+  marker = "pending",
+  joined = [],
   ids = ["general", "welcome"],
   partial = false,
   available = true,
   run = async () => {},
 }: {
-  marker?: "done";
-  channels?: readonly ChannelSummary[];
+  /** `null` writes no marker. */
+  marker?: "pending" | "done" | null;
+  joined?: readonly string[];
   ids?: readonly string[];
   partial?: boolean;
   available?: boolean;
   run?: (action: string, id: string, signal?: AbortSignal) => Promise<void>;
 } = {}) {
   if (marker) writeView(scope, "default-channels", marker);
-  const defaultChannels = vi.fn(async () => ({ ids, partial }));
-  const lifecycle = { available, run: vi.fn(run) };
-  const list: ChannelList = { status: "ready", channels };
+  // The store's contract: candidates are the flagged channels the viewer has
+  // not joined, so a join that succeeded stays out of the next run.
+  const roster = new Set(joined);
+  const defaultChannels = vi.fn(async () => ({
+    ids: ids.filter((id) => !roster.has(id)),
+    partial,
+  }));
+  const lifecycle = {
+    available,
+    run: vi.fn(async (action: string, id: string, signal?: AbortSignal) => {
+      await run(action, id, signal);
+      roster.add(id);
+    }),
+  };
   return {
     defaultChannels,
     lifecycle,
     marker: () => readView(scope, "default-channels", undefined),
+    joins: () => lifecycle.run.mock.calls.map(([, id]) => id),
     ensure: (signal = new AbortController().signal) =>
       ensureDefaultChannels({
-        queries: { list: () => list, defaultChannels },
+        queries: { defaultChannels },
         lifecycle,
         scope,
         signal,
@@ -49,7 +61,6 @@ function harness({
 
 it("joins each flagged channel the viewer lacks, in order, then marks the scope done", async () => {
   const h = harness();
-  expect(h.marker()).toBeUndefined();
   await h.ensure();
   expect(
     h.lifecycle.run.mock.calls.map(([action, id]) => [action, id]),
@@ -60,17 +71,40 @@ it("joins each flagged channel the viewer lacks, in order, then marks the scope 
   expect(h.marker()).toBe("done");
 });
 
-it("a done marker reads nothing and sends nothing", async () => {
-  const h = harness({ marker: "done" });
+it.each([
+  ["no marker (upgrade, another device, cleared storage)", null],
+  ["a done marker", "done"],
+] as const)(
+  "%s reads nothing and sends nothing, even with an empty roster",
+  async (_case, marker) => {
+    const h = harness({ marker });
+    await h.ensure();
+    expect(h.defaultChannels).not.toHaveBeenCalled();
+    expect(h.lifecycle.run).not.toHaveBeenCalled();
+    expect(h.marker()).toBe(marker ?? undefined);
+  },
+);
+
+it("resumes after one join succeeded: the next run joins only what is still missing", async () => {
+  let failing = true;
+  const h = harness({
+    run: async (_action, id) => {
+      if (id === "welcome" && failing) throw new Error("connection lost");
+    },
+  });
   await h.ensure();
-  expect(h.defaultChannels).not.toHaveBeenCalled();
-  expect(h.lifecycle.run).not.toHaveBeenCalled();
+  expect(h.joins()).toEqual(["general", "welcome"]);
+  // #general's membership is kept, so the roster is no longer empty.
+  expect(h.marker()).toBe("pending");
+  failing = false;
+  await h.ensure();
+  expect(h.joins()).toEqual(["general", "welcome", "welcome"]);
+  expect(h.marker()).toBe("done");
 });
 
-it("a non-empty roster spends the one shot without a directory read", async () => {
-  const h = harness({ channels: [general] });
+it("skips channels already joined and settles when none is missing", async () => {
+  const h = harness({ joined: ["general", "welcome"] });
   await h.ensure();
-  expect(h.defaultChannels).not.toHaveBeenCalled();
   expect(h.lifecycle.run).not.toHaveBeenCalled();
   expect(h.marker()).toBe("done");
 });
@@ -87,44 +121,52 @@ it("continues past a relay rejection and still settles", async () => {
   expect(h.marker()).toBe("done");
 });
 
-it("tries every candidate but leaves the shot unspent after an unconfirmed join", async () => {
-  const h = harness({
-    run: async (_action, id) => {
-      if (id === "general")
-        throw new ChannelLifecycleUnconfirmed(new Error("timeout"));
-    },
-  });
-  await h.ensure();
-  expect(h.lifecycle.run).toHaveBeenCalledTimes(2);
-  expect(h.marker()).toBeUndefined();
-});
-
-it("a busy lifecycle owner is not a settled outcome: the next session retries", async () => {
+it.each([
+  [
+    "a rate-limit refusal",
+    new PublishRejected("Rejected", "rate-limited: slow down"),
+  ],
+  [
+    "a rate-limit refusal without a reason",
+    new PublishRejected("rate-limited: slow down"),
+  ],
+  [
+    "a write that never left the device",
+    new PublishNotSent("Relay asked the client to wait"),
+  ],
+  [
+    "an unconfirmed join",
+    new ChannelLifecycleUnconfirmed(new Error("timeout")),
+  ],
   // `lifecycle.run` is single-flight; a user-initiated action throws a plain
   // Error at the fallback, not a PublishRejected.
+  [
+    "a busy lifecycle owner",
+    new Error("Another channel action is still in progress"),
+  ],
+])("tries every candidate but stays pending after %s", async (_case, error) => {
   const h = harness({
     run: async (_action, id) => {
-      if (id === "general")
-        throw new Error("Another channel action is still in progress");
+      if (id === "general") throw error;
     },
   });
   await h.ensure();
   expect(h.lifecycle.run).toHaveBeenCalledTimes(2);
-  expect(h.marker()).toBeUndefined();
+  expect(h.marker()).toBe("pending");
 });
 
-it("a capped directory page joins what it found but leaves the shot unspent", async () => {
+it("a capped directory page joins what it found but stays pending", async () => {
   const h = harness({ partial: true });
   await h.ensure();
   expect(h.lifecycle.run).toHaveBeenCalledTimes(2);
-  expect(h.marker()).toBeUndefined();
+  expect(h.marker()).toBe("pending");
 });
 
 it("skips when channel actions are unavailable on this connection", async () => {
   const h = harness({ available: false });
   await h.ensure();
   expect(h.defaultChannels).not.toHaveBeenCalled();
-  expect(h.marker()).toBeUndefined();
+  expect(h.marker()).toBe("pending");
 });
 
 it("an aborted run stops and leaves the marker for the next session", async () => {
@@ -137,7 +179,7 @@ it("an aborted run stops and leaves the marker for the next session", async () =
   });
   await h.ensure(controller.signal);
   expect(h.lifecycle.run).toHaveBeenCalledTimes(1);
-  expect(h.marker()).toBeUndefined();
+  expect(h.marker()).toBe("pending");
 });
 
 it("the effect waits for a verified live roster on a live connection", async () => {
@@ -161,6 +203,7 @@ it("the effect waits for a verified live roster on a live connection", async () 
       snapshot: () => live,
     },
   } as unknown as Parameters<typeof useDefaultChannels>[0];
+  writeView(scope, "default-channels", "pending");
   const cached = renderHook(() => useDefaultChannels(session, scope, true));
   const connected = renderHook(() => useDefaultChannels(session, scope, false));
   expect(defaultChannels).not.toHaveBeenCalled();

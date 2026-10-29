@@ -89,8 +89,20 @@ it("journals the join before any remote effect, then accepts the policy, claims 
     code: "CODE",
     policy_receipt: "policy-receipt",
   });
-  expect(admission).toEqual({ found: none, entry: entries()[0] });
+  expect(admission).toEqual({ found: none, entry: entries()[0], joined: true });
   expect(entries()).toEqual([{ id: expect.any(String), community }]);
+});
+
+it("reports a new member only for a joined claim", async () => {
+  vi.mocked(communityRequest).mockResolvedValueOnce({
+    status: "already_member",
+  });
+  const admit = (code: string) =>
+    admitCommunity({ community, code, consent, current: () => true });
+  expect(await admit("CODE")).toEqual({ found: none });
+  // Without a code nothing is claimed, so admission cannot show a new member.
+  expect(await admit("")).toEqual({ found: none });
+  expect(communityRequest).toHaveBeenCalledOnce();
 });
 
 it("sends nothing when the journal record cannot be persisted", async () => {
