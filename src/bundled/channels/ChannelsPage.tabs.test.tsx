@@ -42,6 +42,7 @@ import { setThreadPlacementPreference } from "../../features/messages/thread-pre
 import { SOLO_LABEL } from "../../features/solo/labels";
 import { composerDOMFixture } from "../../features/messages/composer-testing";
 import { ChannelsPage } from "./ChannelsPage";
+import type { CommunityMembership } from "../moderation/membership";
 import { ToastProvider } from "../../shared/design-system/ui/Toast";
 import { BrowserHostView } from "../../features/browser/BrowserHostView";
 import { BrowserSessions } from "../../features/browser/sessions";
@@ -302,6 +303,13 @@ function workspace(
   events: RelayEvent[],
   viewer = keypair(),
   authority = keypair(),
+  {
+    membership,
+    lifecycle,
+  }: {
+    membership?: CommunityMembership;
+    lifecycle?: (event: RelayEvent) => Promise<void>;
+  } = {},
 ) {
   const owner = createRelaySession(
     {
@@ -316,6 +324,12 @@ function workspace(
         sign: async (template) => signed(viewer, template),
         publish: async () => {},
       },
+      ...(lifecycle && {
+        channelLifecycle: {
+          sign: async (template) => signed(viewer, template),
+          publish: lifecycle,
+        },
+      }),
     },
     { outboxStorage: { load: () => [], save: () => {} } },
   );
@@ -353,6 +367,7 @@ function workspace(
         panels={panels}
         navigator={navigator}
         navigation={navigation}
+        membership={membership}
       />
     </ToastProvider>
   );
@@ -395,6 +410,54 @@ it("opens the community's auto-join channel first when nothing is saved", async 
     authority,
   );
   await screen.findByRole("textbox", { name: "Message #Beta" });
+});
+
+it("hands the community roster to Channel settings and follows the republished flag", async () => {
+  const viewer = keypair(),
+    authority = keypair();
+  const id = "11111111-1111-4111-8111-111111111111";
+  const open = (at: number, extra: string[][] = []) =>
+    metadata(authority, id, "Alpha", at, [
+      ["t", "stream"],
+      ["public"],
+      ...extra,
+    ]);
+  const events = [roster(authority, id, [viewer.pubkey]), open(1_700_000_000)];
+  const ensure = vi.fn(() => () => {});
+  workspace(events, viewer, authority, {
+    membership: {
+      snapshot: () => ({
+        status: "ready",
+        members: [],
+        role: "owner",
+        refreshing: false,
+      }),
+      subscribe: () => () => true,
+      ensure,
+      refresh: async () => {},
+      dispose: () => {},
+    },
+    // The relay applies the accepted 9002 and republishes its metadata.
+    lifecycle: async (event) => {
+      if (event.kind === 9002)
+        events.push(open(1_700_000_100, [["auto_join"]]));
+    },
+  });
+  await screen.findByRole("textbox", { name: "Message #Alpha" });
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Channel actions" }));
+  await user.click(
+    await screen.findByRole("menuitem", { name: "View channel details" }),
+  );
+  const control = await screen.findByRole("switch", {
+    name: "Starter channel for new members",
+  });
+  expect(ensure).toHaveBeenCalledOnce();
+  expect(control).not.toBeChecked();
+  await user.click(control);
+  await vi.waitFor(() => expect(control).toBeChecked());
+  expect(control).not.toHaveAttribute("aria-busy");
+  expect(control.closest("dd")?.querySelector("[role=alert]")).toBeNull();
 });
 
 it("selects a default channel the relay adds after the page opened", async () => {
