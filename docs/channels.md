@@ -1262,13 +1262,15 @@ explicit empty route bypasses both. The relay joins a new member into its
 hints populate the sidebar live; it never re-adds them, so a later leave stands.
 `features/channels/default-channels.ts` backs up an add that failed at the
 claim, and only then: when the claim made on this device returned `joined`
-(never `already_member`), the `default-channels` view-state marker is `pending`,
-and once the live roster is verified Messages joins each flagged public channel
-the viewer is not in through the lifecycle owner. The marker becomes `done` only
-when the directory read was complete and every candidate either joined or was
-definitively refused; a rate limit, an unsent or unconfirmed join, a capped
-directory read or leaving Messages keeps it `pending`, and the next launch joins
-only what is still missing. Without a marker nothing runs, so upgrading,
+(never `already_member`), the `default-channels` view-state marker is `pending`.
+Once the live roster is verified, Messages records the flagged public channels
+the viewer is not in as owed (a capped directory read is final) and joins each
+through the lifecycle owner. Channels the claim already added are never owed,
+so leaving one stands. An owed channel is dropped once it joins, is already
+joined, is no longer a flagged public channel or is definitively refused; a
+rate limit, an unsent or unconfirmed join or leaving Messages keeps it owed, and
+the next launch retries only owed channels the viewer is still not in. The
+marker becomes `done` when nothing is owed. Without a marker nothing runs, so upgrading,
 another device, cleared storage, a recovered claim whose reply was lost, and
 setup without an invite code never re-add channels the viewer left. Open
 communities, which require no claim, therefore get no client fallback: the

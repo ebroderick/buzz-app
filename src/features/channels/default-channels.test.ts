@@ -17,15 +17,13 @@ function harness({
   marker = "pending",
   joined = [],
   ids = ["general", "welcome"],
-  partial = false,
   available = true,
   run = async () => {},
 }: {
   /** `null` writes no marker. */
-  marker?: "pending" | "done" | null;
+  marker?: "pending" | "done" | { owed: string[] } | null;
   joined?: readonly string[];
   ids?: readonly string[];
-  partial?: boolean;
   available?: boolean;
   run?: (action: string, id: string, signal?: AbortSignal) => Promise<void>;
 } = {}) {
@@ -33,10 +31,9 @@ function harness({
   // The store's contract: candidates are the flagged channels the viewer has
   // not joined, so a join that succeeded stays out of the next run.
   const roster = new Set(joined);
-  const defaultChannels = vi.fn(async () => ({
-    ids: ids.filter((id) => !roster.has(id)),
-    partial,
-  }));
+  const defaultChannels = vi.fn(async () =>
+    ids.filter((id) => !roster.has(id)),
+  );
   const lifecycle = {
     available,
     run: vi.fn(async (action: string, id: string, signal?: AbortSignal) => {
@@ -49,6 +46,7 @@ function harness({
     lifecycle,
     marker: () => readView(scope, "default-channels", undefined),
     joins: () => lifecycle.run.mock.calls.map(([, id]) => id),
+    leave: (id: string) => roster.delete(id),
     ensure: (signal = new AbortController().signal) =>
       ensureDefaultChannels({
         queries: { defaultChannels },
@@ -85,7 +83,7 @@ it.each([
   },
 );
 
-it("resumes after one join succeeded: the next run joins only what is still missing", async () => {
+it("resumes after one join succeeded: the next run joins only what is still owed", async () => {
   let failing = true;
   const h = harness({
     run: async (_action, id) => {
@@ -94,11 +92,37 @@ it("resumes after one join succeeded: the next run joins only what is still miss
   });
   await h.ensure();
   expect(h.joins()).toEqual(["general", "welcome"]);
-  // #general's membership is kept, so the roster is no longer empty.
-  expect(h.marker()).toBe("pending");
+  expect(h.marker()).toEqual({ owed: ["welcome"] });
   failing = false;
   await h.ensure();
   expect(h.joins()).toEqual(["general", "welcome", "welcome"]);
+  expect(h.marker()).toBe("done");
+});
+
+it("never owes a channel the claim already added, so leaving it stands", async () => {
+  let unconfirmed = true;
+  // The claim added #general; adding #welcome failed there.
+  const h = harness({
+    joined: ["general"],
+    run: async (_action, id) => {
+      if (id === "welcome" && unconfirmed)
+        throw new ChannelLifecycleUnconfirmed(new Error("timeout"));
+    },
+  });
+  await h.ensure();
+  expect(h.joins()).toEqual(["welcome"]);
+  expect(h.marker()).toEqual({ owed: ["welcome"] });
+  h.leave("general");
+  unconfirmed = false;
+  await h.ensure();
+  expect(h.joins()).toEqual(["welcome", "welcome"]);
+  expect(h.marker()).toBe("done");
+});
+
+it("drops an owed channel that is no longer missing without sending", async () => {
+  const h = harness({ marker: { owed: ["welcome"] }, joined: ["welcome"] });
+  await h.ensure();
+  expect(h.lifecycle.run).not.toHaveBeenCalled();
   expect(h.marker()).toBe("done");
 });
 
@@ -144,48 +168,63 @@ it.each([
     "a busy lifecycle owner",
     new Error("Another channel action is still in progress"),
   ],
-])("tries every candidate but stays pending after %s", async (_case, error) => {
-  const h = harness({
-    run: async (_action, id) => {
-      if (id === "general") throw error;
-    },
-  });
+])(
+  "tries every candidate but keeps one owed after %s",
+  async (_case, error) => {
+    const h = harness({
+      run: async (_action, id) => {
+        if (id === "general") throw error;
+      },
+    });
+    await h.ensure();
+    expect(h.lifecycle.run).toHaveBeenCalledTimes(2);
+    expect(h.marker()).toEqual({ owed: ["general"] });
+  },
+);
+
+it("a capped directory page is final: a flagged channel past it is never owed", async () => {
+  const h = harness({ ids: ["general"] });
   await h.ensure();
-  expect(h.lifecycle.run).toHaveBeenCalledTimes(2);
-  expect(h.marker()).toBe("pending");
+  expect(h.joins()).toEqual(["general"]);
+  expect(h.marker()).toBe("done");
+  await h.ensure();
+  expect(h.defaultChannels).toHaveBeenCalledOnce();
 });
 
-it("a capped directory page joins what it found but stays pending", async () => {
-  const h = harness({ partial: true });
-  await h.ensure();
-  expect(h.lifecycle.run).toHaveBeenCalledTimes(2);
-  expect(h.marker()).toBe("pending");
-});
+it.each([
+  ["pending", "pending"],
+  ["an owed set", { owed: ["welcome"] }],
+] as const)(
+  "skips when channel actions are unavailable on this connection, keeping %s",
+  async (_case, marker) => {
+    const h = harness({
+      marker: typeof marker === "string" ? marker : { owed: [...marker.owed] },
+      available: false,
+    });
+    await h.ensure();
+    expect(h.defaultChannels).not.toHaveBeenCalled();
+    expect(h.marker()).toEqual(marker);
+  },
+);
 
-it("skips when channel actions are unavailable on this connection", async () => {
-  const h = harness({ available: false });
-  await h.ensure();
-  expect(h.defaultChannels).not.toHaveBeenCalled();
-  expect(h.marker()).toBe("pending");
-});
-
-it("an aborted run stops and leaves the marker for the next session", async () => {
+it("an aborted run stops and keeps what is still owed for the next session", async () => {
   const controller = new AbortController();
   const h = harness({
-    run: async (_action, _id, signal) => {
+    run: async (_action, id, signal) => {
+      if (id !== "welcome") return;
       controller.abort();
       throw signal?.reason;
     },
   });
   await h.ensure(controller.signal);
-  expect(h.lifecycle.run).toHaveBeenCalledTimes(1);
-  expect(h.marker()).toBe("pending");
+  expect(h.joins()).toEqual(["general", "welcome"]);
+  expect(h.marker()).toEqual({ owed: ["welcome"] });
 });
 
 it("the effect waits for a verified live roster on a live connection", async () => {
   let live = { roster: { state: "pending" } };
   const listeners = new Set<() => void>();
-  const defaultChannels = vi.fn(async () => ({ ids: [], partial: false }));
+  const defaultChannels = vi.fn(async () => []);
   const list: ChannelList = { status: "ready", channels: [] };
   const session = {
     channels: {

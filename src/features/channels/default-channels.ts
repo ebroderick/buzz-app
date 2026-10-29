@@ -7,8 +7,9 @@ import { useChannelList } from "../relay/react";
 import type { RelaySession } from "../relay/session";
 import { readView, writeView } from "../../shared/view-state";
 
-/** `pending` from a fresh admission until the fallback settles, then `done`;
- * leaving the community purges it with the rest of the view scope. */
+/** `pending` from a fresh admission, then `{ owed }` once the first run has
+ * snapshotted what the claim missed, then `done`; leaving the community purges
+ * it with the rest of the view scope. */
 const KEY = "default-channels";
 
 /** A claim that made this viewer a new member (`joined`, never
@@ -16,6 +17,16 @@ const KEY = "default-channels";
  * channels once, on this device. */
 export function markDefaultChannelsPending(origin: string, viewer: string) {
   writeView(relayPartition(origin, viewer), KEY, "pending");
+}
+
+/** `pending`, the ids still owed, or nothing to do. */
+function readMarker(scope: string): "pending" | readonly string[] | undefined {
+  const marker = readView<unknown>(scope, KEY, undefined);
+  if (marker === "pending") return marker;
+  const owed = (marker as { owed?: unknown } | undefined)?.owed;
+  return Array.isArray(owed)
+    ? owed.filter((id): id is string => typeof id === "string")
+    : undefined;
 }
 
 /** A definitive refusal settles a candidate; a rate limit, or a write that
@@ -26,14 +37,17 @@ const refused = (error: unknown) =>
   !(error.reason ?? error.message).startsWith("rate-limited:");
 
 /** The relay joins new members into its `auto_join` channels itself, once, at
- * the claim. This is the backstop for an add that failed there: only while the
- * scope is `pending` (written by `markDefaultChannelsPending`), send 9021 for
- * each flagged public channel the verified roster lacks. No marker means no
- * fresh admission on this device (an upgrade, another device, cleared storage
- * or an open community), so nothing runs and a member's earlier leave stands.
- * The marker becomes `done` only when the directory read was complete and
- * every candidate settled with success or a definitive relay refusal; anything
- * else leaves it `pending`, and the next run joins what is still missing. */
+ * the claim. This is the backstop for an add that failed there. The first run
+ * after a `pending` marker (written by `markDefaultChannelsPending`) records
+ * the flagged public channels the verified roster lacks as owed, from whatever
+ * page the directory read returned (a capped page is final). Channels the
+ * relay already added are never owed, so leaving one is never undone. Each run
+ * sends 9021 only for owed ids the directory still lists as candidates, and
+ * drops an id once it joined, is no longer listed (already joined, archived or
+ * unflagged) or was definitively refused; the marker is `done` when nothing is
+ * owed. No marker means no fresh admission on this device (an upgrade, another
+ * device, cleared storage or an open community), so nothing runs and a
+ * member's earlier leave stands. */
 export async function ensureDefaultChannels({
   queries,
   lifecycle,
@@ -45,30 +59,36 @@ export async function ensureDefaultChannels({
   scope: string;
   signal: AbortSignal;
 }): Promise<void> {
-  if (readView(scope, KEY, undefined) !== "pending") return;
+  const marker = readMarker(scope);
+  if (!marker) return;
   if (!lifecycle.available || !queries.defaultChannels) return;
-  let ids: readonly string[];
-  let partial: boolean;
+  let missing: readonly string[];
   try {
-    ({ ids, partial } = await queries.defaultChannels({ signal }));
+    missing = await queries.defaultChannels({ signal });
   } catch {
     return;
   }
-  // A capped directory page may hide flagged channels; stay pending.
-  let settled = !partial;
-  // Joined channels are not candidates, so a resumed run sends only what is
-  // still missing. Sequential: the lifecycle owner is single-flight, and its
-  // join pre-read already sends nothing for a channel the relay added meanwhile.
-  for (const id of ids) {
+  const candidates =
+    marker === "pending"
+      ? missing
+      : marker.filter((id) => missing.includes(id));
+  let owed = candidates;
+  const save = () => writeView(scope, KEY, owed.length ? { owed } : "done");
+  save();
+  // Sequential: the lifecycle owner is single-flight, and its join pre-read
+  // already sends nothing for a channel the relay added meanwhile. Each settled
+  // id is dropped at once, so a later leave of it stands even if this run stops.
+  for (const id of candidates) {
     if (signal.aborted) return;
     try {
       await lifecycle.run("join", id, signal);
     } catch (error) {
       if (signal.aborted) return;
-      if (!refused(error)) settled = false;
+      if (!refused(error)) continue;
     }
+    owed = owed.filter((other) => other !== id);
+    save();
   }
-  if (settled) writeView(scope, KEY, "done");
 }
 
 /** Runs the fallback once the live roster is verified; cached sessions wait

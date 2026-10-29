@@ -1622,10 +1622,7 @@ it("lists the flagged, active, public channels the viewer has not joined as defa
     flagged(joined, "Joined"),
   ]);
   // Candidates only, in name order; joining each one re-reads it.
-  expect(await done).toEqual({
-    ids: ["aa-general", "zz-welcome"],
-    partial: false,
-  });
+  expect(await done).toEqual(["aa-general", "zz-welcome"]);
   expect(h.pending).toHaveLength(0);
 });
 
