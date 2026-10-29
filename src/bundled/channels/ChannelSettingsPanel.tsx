@@ -10,7 +10,10 @@ import {
   type ReactNode,
 } from "react";
 import type { ChannelSummary } from "../../features/relay/contracts";
-import type { ChannelLifecycleCapability } from "../../features/relay/channel-lifecycle";
+import {
+  ChannelLifecycleUnconfirmed,
+  type ChannelLifecycleCapability,
+} from "../../features/relay/channel-lifecycle";
 import { PublishRejected } from "../../features/relay/outbox";
 import { managesCommunity } from "../../features/communities/roster";
 import type { CommunityMembership } from "../moderation/membership";
@@ -26,7 +29,7 @@ import { Tabs } from "../../shared/design-system/ui/Tabs";
 import { Tooltip } from "../../shared/design-system/ui/Tooltip";
 import { Panel } from "../../shared/design-system/ui/Panel";
 import { PanelHeader } from "../../shared/design-system/ui/PanelHeader";
-import { SwitchPreferenceRow } from "../../shared/design-system/ui/SwitchPreferenceRow";
+import { Switch } from "../../shared/design-system/ui/Switch";
 import styles from "./Channels.module.css";
 import type { ChannelDetailsCapability } from "../../features/relay/channel-details";
 import {
@@ -257,6 +260,8 @@ function AutoJoinSetting({
   const [error, setError] = useState("");
   const operation = useRef<AbortController | undefined>(undefined);
   useEffect(() => () => operation.current?.abort(), []);
+  const control = useId();
+  const description = useId();
   if (!managesCommunity(role)) return null;
   const toggle = async (enabled: boolean) => {
     if (operation.current) return;
@@ -273,33 +278,47 @@ function AutoJoinSetting({
     } catch (error) {
       if (!controller.signal.aborted)
         setError(
-          error instanceof PublishRejected
-            ? (error.reason ??
+          // Setting the same value again is idempotent, so retrying is the check.
+          error instanceof ChannelLifecycleUnconfirmed
+            ? "Saved, but not confirmed yet. Try again to check."
+            : error instanceof PublishRejected
+              ? (error.reason ??
                 "Only community owners and admins can change this.")
-            : error instanceof Error
-              ? error.message
-              : String(error),
+              : error instanceof Error
+                ? error.message
+                : String(error),
         );
     } finally {
       operation.current = undefined;
       if (!controller.signal.aborted) setPending(false);
     }
   };
+  // A row of the details list: the label is its term, and the description,
+  // switch and any error are its definition.
   return (
     <div className={styles.settingsSwitch}>
-      <SwitchPreferenceRow
-        label="Starter channel for new members"
-        description="New community members are added to this channel automatically."
-        checked={!!channel.autoJoin}
-        disabled={pending || !lifecycle.available}
-        aria-busy={pending || undefined}
-        onCheckedChange={(enabled) => void toggle(enabled)}
-      />
-      {error && (
-        <p role="alert" className="text-danger">
-          {error}
-        </p>
-      )}
+      <dt>
+        <label htmlFor={control}>Starter channel for new members</label>
+      </dt>
+      <dd>
+        <span id={description}>
+          New community members are added to this channel automatically.
+        </span>
+        <Switch
+          id={control}
+          aria-label="Starter channel for new members"
+          aria-describedby={description}
+          checked={!!channel.autoJoin}
+          disabled={pending || !lifecycle.available}
+          aria-busy={pending || undefined}
+          onCheckedChange={(enabled) => void toggle(enabled)}
+        />
+        {error && (
+          <p role="alert" className="text-danger">
+            {error}
+          </p>
+        )}
+      </dd>
     </div>
   );
 }

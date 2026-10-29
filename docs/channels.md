@@ -655,7 +655,7 @@ changes; none publishes immediately.
 **Starter channel for new members**, between Description and Members, is separate: an
 immediate switch that publishes its own narrow `9002` (see
 [Channel lifecycle](#channel-lifecycle)) and shows pending, the relay's refusal
-or refresh guidance beside itself. It appears only to community owners and admins
+or, when the change is not confirmed, a prompt to try again beside itself. It appears only to community owners and admins
 (the relay-signed kind `13534` roster) on an active public stream channel; the
 relay enforces that rule, so the gate is display-only.
 **Save changes** submits the draft together and is enabled only for valid, changed values.

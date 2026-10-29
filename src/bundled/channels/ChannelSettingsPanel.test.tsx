@@ -2,7 +2,7 @@
 import "@testing-library/jest-dom/vitest";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, assert, expect, it, vi } from "vitest";
 import { ChannelSettingsPanel } from "./ChannelSettingsPanel";
 import type { ChannelSummary } from "../../features/relay/contracts";
 import {
@@ -317,6 +317,15 @@ const noAutoJoinSwitch = () =>
   expect(
     screen.queryByRole("switch", { name: "Starter channel for new members" }),
   ).not.toBeInTheDocument();
+/** Every child of the details list is a `div` of terms then definitions. */
+const expectDefinitionRows = (node: Element) => {
+  const list = node.closest("dl");
+  assert(list);
+  for (const row of list.children)
+    expect(
+      `${row.tagName}:${[...row.children].map((child) => child.tagName).join(",")}`,
+    ).toMatch(/^DIV:DT(,DT)*(,DD)+$/);
+};
 
 // [case, channel, community role, switch shown, roster read held]
 it.each<[string, ChannelSummary, Role | undefined, boolean, boolean]>([
@@ -393,6 +402,11 @@ it.each<[string, ChannelSummary, Role | undefined, boolean, boolean]>([
         "New community members are added to this channel automatically.",
       );
       expect(control).not.toBeChecked();
+      // The label is the row's term; the switch belongs to its definition.
+      expect(control.closest("dd")?.previousElementSibling).toHaveTextContent(
+        "Starter channel for new members",
+      );
+      expectDefinitionRows(control);
       expect(
         screen.getByText("Visibility").compareDocumentPosition(control),
       ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
@@ -431,7 +445,8 @@ it("runs the matching command, stays pending until it settles, then follows the 
     }),
   );
   const { rerender } = render(autoJoinPanel(publicStream, "owner", capability));
-  await user.click(autoJoinSwitch());
+  // The visible term labels the switch.
+  await user.click(screen.getByText("Starter channel for new members"));
   try {
     expect(capability.run).toHaveBeenCalledExactlyOnceWith(
       "auto-join-on",
@@ -471,9 +486,14 @@ it.each([
     "Only community owners and admins can change this.",
   ],
   [
-    "refresh guidance for an uncertain outcome",
-    new ChannelLifecycleUnconfirmed("connection lost"),
-    "The request may have taken effect. Refresh channels before trying again.",
+    "a retry for an unconfirmed outcome",
+    // As the lifecycle owner throws it when readback never shows the flag.
+    new ChannelLifecycleUnconfirmed(
+      new Error(
+        "The relay accepted the request, but the change is not confirmed. Refresh channels before trying again.",
+      ),
+    ),
+    "Saved, but not confirmed yet. Try again to check.",
   ],
 ])(
   "reports %s and lets the switch be tried again",
@@ -483,7 +503,9 @@ it.each([
     capability.run.mockRejectedValueOnce(failure);
     render(autoJoinPanel(publicStream, "owner", capability));
     await user.click(autoJoinSwitch());
-    expect(await screen.findByRole("alert")).toHaveTextContent(copy);
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe(copy);
+    expectDefinitionRows(alert);
     expect(autoJoinSwitch()).not.toHaveAttribute("aria-disabled");
     expect(autoJoinSwitch()).not.toBeChecked();
     await user.click(autoJoinSwitch());

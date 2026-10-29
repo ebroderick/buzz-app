@@ -872,9 +872,15 @@ html[data-keyboard-navigation]
   margin: var(--space-1) 0 0;
   color: var(--text-subtle);
 }
-/* The preference row brings its own vertical padding; keep the list rhythm. */
-.settingsDetails > .settingsSwitch {
-  padding-block: calc(var(--space-4) - var(--space-3));
+/* The switch trails its description; an error spans the row below both. */
+.settingsSwitch > dd {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-1) var(--space-3);
+}
+.settingsSwitch > dd > [role="alert"] {
+  grid-column: 1 / -1;
 }
 .settingsId {
   overflow-wrap: anywhere;
