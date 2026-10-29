@@ -1,11 +1,14 @@
 import { useEffect, useSyncExternalStore } from "react";
-import type { ChannelLifecycleCapability } from "../relay/channel-lifecycle";
+import {
+  ChannelLifecycleUnconfirmed,
+  type ChannelLifecycleCapability,
+} from "../relay/channel-lifecycle";
 import type { ChannelQueries } from "../relay/contracts";
 import { PublishNotSent, PublishRejected } from "../relay/outbox";
 import { relayPartition } from "../relay/partition";
 import { useChannelList } from "../relay/react";
 import type { RelaySession } from "../relay/session";
-import { readView, writeView } from "../../shared/view-state";
+import { clearView, readView, writeView } from "../../shared/view-state";
 
 /** `pending` from a fresh admission, then `{ owed }` once the first run has
  * snapshotted what the claim missed, then `done`; leaving the community purges
@@ -29,12 +32,16 @@ function readMarker(scope: string): "pending" | readonly string[] | undefined {
     : undefined;
 }
 
-/** A definitive refusal settles a candidate; a rate limit, or a write that
- * never left this device, may succeed later. */
-const refused = (error: unknown) =>
-  error instanceof PublishRejected &&
-  !(error instanceof PublishNotSent) &&
-  !(error.reason ?? error.message).startsWith("rate-limited:");
+/** A join settles once it may have reached the relay (unconfirmed, which
+ * includes a cancellation after publishing) or was definitively refused.
+ * Failures known to precede publication may succeed later: a rate limit, a
+ * write that never left this device, a busy or unavailable lifecycle owner, or
+ * a cancellation before publishing. */
+const settles = (error: unknown) =>
+  error instanceof ChannelLifecycleUnconfirmed ||
+  (error instanceof PublishRejected &&
+    !(error instanceof PublishNotSent) &&
+    !(error.reason ?? error.message).startsWith("rate-limited:"));
 
 /** The relay joins new members into its `auto_join` channels itself, once, at
  * the claim. This is the backstop for an add that failed there. The first run
@@ -43,11 +50,14 @@ const refused = (error: unknown) =>
  * page the directory read returned (a capped page is final). Channels the
  * relay already added are never owed, so leaving one is never undone. Each run
  * sends 9021 only for owed ids the directory still lists as candidates, and
- * drops an id once it joined, is no longer listed (already joined, archived or
- * unflagged) or was definitively refused; the marker is `done` when nothing is
- * owed. No marker means no fresh admission on this device (an upgrade, another
- * device, cleared storage or an open community), so nothing runs and a
- * member's earlier leave stands. */
+ * drops an id once it joined, may have joined (unconfirmed), is no longer
+ * listed (already joined, archived or unflagged) or was definitively refused;
+ * the marker is `done` when nothing is owed. Nothing is sent until the owed
+ * set is stored, and a drop that cannot be stored forgets the marker, so a
+ * channel this fallback may have joined is never owed again. No marker means
+ * no fresh admission on this device (an upgrade, another device, cleared
+ * storage or an open community), so nothing runs and a member's earlier leave
+ * stands. */
 export async function ensureDefaultChannels({
   queries,
   lifecycle,
@@ -74,7 +84,9 @@ export async function ensureDefaultChannels({
       : marker.filter((id) => missing.includes(id));
   let owed = candidates;
   const save = () => writeView(scope, KEY, owed.length ? { owed } : "done");
-  save();
+  // Send nothing until the owed set is stored: a stale `pending` or owed set
+  // would owe this run's joins again.
+  if (!save()) return;
   // Sequential: the lifecycle owner is single-flight, and its join pre-read
   // already sends nothing for a channel the relay added meanwhile. Each settled
   // id is dropped at once, so a later leave of it stands even if this run stops.
@@ -83,11 +95,21 @@ export async function ensureDefaultChannels({
     try {
       await lifecycle.run("join", id, signal);
     } catch (error) {
-      if (signal.aborted) return;
-      if (!refused(error)) continue;
+      if (!settles(error)) {
+        if (signal.aborted) return;
+        continue;
+      }
     }
     owed = owed.filter((other) => other !== id);
-    save();
+    if (save()) continue;
+    // Storage still owes a channel that may have joined: give up the rest
+    // rather than rejoin it after a leave.
+    try {
+      clearView(scope, KEY);
+    } catch {
+      // Storage is unavailable; nothing more can be recorded.
+    }
+    return;
   }
 }
 

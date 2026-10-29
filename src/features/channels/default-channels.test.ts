@@ -11,7 +11,16 @@ import { ensureDefaultChannels, useDefaultChannels } from "./default-channels";
 const viewer = "a".repeat(64);
 const origin = "https://relay.test";
 const scope = relayPartition(origin, viewer);
-afterEach(() => localStorage.clear());
+afterEach(() => {
+  vi.restoreAllMocks();
+  localStorage.clear();
+});
+
+/** Every view-state write fails, as when storage is full. */
+const storageFull = () =>
+  vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+    throw new DOMException("Storage is full", "QuotaExceededError");
+  });
 
 function harness({
   marker = "pending",
@@ -25,7 +34,14 @@ function harness({
   joined?: readonly string[];
   ids?: readonly string[];
   available?: boolean;
-  run?: (action: string, id: string, signal?: AbortSignal) => Promise<void>;
+  /** `publish` records a membership the relay applied even if `run` then
+   * throws, as for an accepted join whose confirmation was lost. */
+  run?: (
+    action: string,
+    id: string,
+    signal: AbortSignal | undefined,
+    publish: () => void,
+  ) => Promise<void>;
 } = {}) {
   if (marker) writeView(scope, "default-channels", marker);
   // The store's contract: candidates are the flagged channels the viewer has
@@ -37,7 +53,7 @@ function harness({
   const lifecycle = {
     available,
     run: vi.fn(async (action: string, id: string, signal?: AbortSignal) => {
-      await run(action, id, signal);
+      await run(action, id, signal, () => roster.add(id));
       roster.add(id);
     }),
   };
@@ -100,20 +116,20 @@ it("resumes after one join succeeded: the next run joins only what is still owed
 });
 
 it("never owes a channel the claim already added, so leaving it stands", async () => {
-  let unconfirmed = true;
+  let unsent = true;
   // The claim added #general; adding #welcome failed there.
   const h = harness({
     joined: ["general"],
     run: async (_action, id) => {
-      if (id === "welcome" && unconfirmed)
-        throw new ChannelLifecycleUnconfirmed(new Error("timeout"));
+      if (id === "welcome" && unsent)
+        throw new PublishNotSent("rate-limited: slow down");
     },
   });
   await h.ensure();
   expect(h.joins()).toEqual(["welcome"]);
   expect(h.marker()).toEqual({ owed: ["welcome"] });
   h.leave("general");
-  unconfirmed = false;
+  unsent = false;
   await h.ensure();
   expect(h.joins()).toEqual(["welcome", "welcome"]);
   expect(h.marker()).toBe("done");
@@ -158,10 +174,6 @@ it.each([
     "a write that never left the device",
     new PublishNotSent("Relay asked the client to wait"),
   ],
-  [
-    "an unconfirmed join",
-    new ChannelLifecycleUnconfirmed(new Error("timeout")),
-  ],
   // `lifecycle.run` is single-flight; a user-initiated action throws a plain
   // Error at the fallback, not a PublishRejected.
   [
@@ -181,6 +193,72 @@ it.each([
     expect(h.marker()).toEqual({ owed: ["general"] });
   },
 );
+
+it("settles a join accepted but unconfirmed, so leaving it stands", async () => {
+  const h = harness({
+    run: async (_action, id, _signal, publish) => {
+      if (id !== "general") return;
+      publish();
+      throw new ChannelLifecycleUnconfirmed(new Error("timeout"));
+    },
+  });
+  await h.ensure();
+  expect(h.joins()).toEqual(["general", "welcome"]);
+  expect(h.marker()).toBe("done");
+  h.leave("general");
+  await h.ensure();
+  expect(h.joins()).toEqual(["general", "welcome"]);
+});
+
+it("settles a join cancelled after publishing, then stops", async () => {
+  const controller = new AbortController();
+  const h = harness({
+    run: async (_action, id, signal, publish) => {
+      if (id !== "general") return;
+      publish();
+      controller.abort();
+      // The lifecycle owner reports any failure after publishing, an abort
+      // included, as unconfirmed.
+      throw new ChannelLifecycleUnconfirmed(signal?.reason);
+    },
+  });
+  await h.ensure(controller.signal);
+  expect(h.joins()).toEqual(["general"]);
+  expect(h.marker()).toEqual({ owed: ["welcome"] });
+  h.leave("general");
+  await h.ensure();
+  expect(h.joins()).toEqual(["general", "welcome"]);
+  expect(h.marker()).toBe("done");
+});
+
+it("sends no join until the owed snapshot is stored", async () => {
+  const h = harness();
+  const full = storageFull();
+  await h.ensure();
+  await h.ensure();
+  expect(h.defaultChannels).toHaveBeenCalledTimes(2);
+  expect(h.lifecycle.run).not.toHaveBeenCalled();
+  expect(h.marker()).toBe("pending");
+  full.mockRestore();
+  await h.ensure();
+  expect(h.joins()).toEqual(["general", "welcome"]);
+  expect(h.marker()).toBe("done");
+});
+
+it("forgets the marker when a join cannot be recorded, so leaving it stands", async () => {
+  const h = harness({
+    run: async (_action, id) => {
+      if (id === "general") storageFull();
+    },
+  });
+  await h.ensure();
+  vi.restoreAllMocks();
+  expect(h.joins()).toEqual(["general"]);
+  expect(h.marker()).toBeUndefined();
+  h.leave("general");
+  await h.ensure();
+  expect(h.joins()).toEqual(["general"]);
+});
 
 it("a capped directory page is final: a flagged channel past it is never owed", async () => {
   const h = harness({ ids: ["general"] });
@@ -207,7 +285,7 @@ it.each([
   },
 );
 
-it("an aborted run stops and keeps what is still owed for the next session", async () => {
+it("a run cancelled before publishing stops and keeps what is still owed for the next session", async () => {
   const controller = new AbortController();
   const h = harness({
     run: async (_action, id, signal) => {
