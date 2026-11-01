@@ -408,7 +408,7 @@ it.each<[string, ChannelSummary, Role | undefined, boolean, boolean]>([
       );
       expectDefinitionRows(control);
       expect(
-        screen.getByText("Visibility").compareDocumentPosition(control),
+        screen.getByText("Description").compareDocumentPosition(control),
       ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
       expect(control.compareDocumentPosition(screen.getByText("Members"))).toBe(
         Node.DOCUMENT_POSITION_FOLLOWING,
