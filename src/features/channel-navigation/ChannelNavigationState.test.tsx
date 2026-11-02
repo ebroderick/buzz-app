@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import "@testing-library/jest-dom/vitest";
 import { StrictMode, type ReactNode } from "react";
 import {
   act,
@@ -178,6 +179,28 @@ it("hands both entrances to one confirmation and preserves its origin until clos
     action: "archive",
   });
 });
+
+it.each([true, false])(
+  "says whether archiving starter channel (%s) resumes adding new members on Unarchive",
+  async (autoJoin) => {
+    const view = mount(fixture().relay, true);
+    act(() =>
+      view.result.current.openLifecycle(
+        { id: "general", name: "general", ...(autoJoin && { autoJoin }) },
+        "archive",
+      ),
+    );
+    const archive =
+      "Archive this channel for everyone and remove it from the sidebar. Messages are kept. Find it in search and open Settings to unarchive it later.";
+    expect(
+      await screen.findByRole("dialog", { name: "Archive channel: general" }),
+    ).toHaveAccessibleDescription(
+      autoJoin
+        ? `${archive} It’s a starter channel, so new members will be added to it again once it’s unarchived. To stop that, turn off Starter channel for new members in Settings first.`
+        : archive,
+    );
+  },
+);
 
 it("retains the settings tab close control when an archive action remounts", () => {
   const view = mount(fixture().relay);

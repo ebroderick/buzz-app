@@ -658,6 +658,12 @@ immediate switch that publishes its own narrow `9002` (see
 or, when the change is not confirmed, a prompt to try again beside itself. It appears only to community owners and admins
 (the relay-signed kind `13534` roster) on an active public stream channel; the
 relay enforces that rule, so the gate is display-only.
+Archiving a starter channel or making it private hides the switch and pauses the
+flag without clearing it: the relay stops advertising and applying it, refuses
+to change it on a private channel, and resumes adding new members on Unarchive
+or once the channel is public again. For a starter channel, the Archive and
+**Change general access?** (to Private) confirmations say so, so an owner or
+admin can turn the switch off first.
 **Save changes** submits the draft together and is enabled only for valid, changed values.
 **Cancel** explicitly discards edits and closes without confirmation. Close, Escape
 and backdrop clicks close untouched forms immediately; changed drafts first show
@@ -1257,12 +1263,23 @@ the ordinary cold connection flow; unavailable/corrupt storage never grants acce
 
 With no saved selection, Messages opens the first channel the relay flags
 `auto_join` (its starter channel for new members), then the first non-Solo
-channel; an explicit empty route bypasses both. The relay adds a new member to
-its `auto_join` channels itself, once, during the invite claim, and the resulting
-membership hints populate the sidebar live. The client only reads the flag: it
-never sends a join on a member's behalf, and the relay never re-adds a member,
-so a later leave stands. In an open community, which needs no claim, the relay
-advertises the flag but adds nobody.
+channel; an explicit empty route bypasses both. The relay adds people to its
+`auto_join` channels itself, and the resulting membership hints populate the
+sidebar live:
+
+- A community that requires relay membership adds a member once, when they join
+  its roster: an invite claim that answers `joined`, or an admin's kind `9030`
+  add. A reclaim answering `already_member` adds nothing, and existing members
+  are not added to a channel flagged later.
+- An open community has no roster to join. After each human WebSocket AUTH
+  (agents are skipped) the relay adds the person to every `auto_join` channel
+  they have never been a member of, including channels flagged after they first
+  connected.
+
+Either way a later leave stands: the roster path does not run again for an
+existing member, and on the open path a leave or removal keeps a membership
+record, so the relay does not add the person back. The client only reads the
+flag; it never sends a join on a member's behalf.
 
 A cached roster can display previously downloaded, reverified history for up to
 24 hours. It cannot authorize head/history reads, unread evidence, typing or

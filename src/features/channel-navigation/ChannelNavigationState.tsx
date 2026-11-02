@@ -362,6 +362,7 @@ export function ChannelNavigationProvider({
             noun={lifecycleNoun(state.lifecycleDialog.channel)}
             action={state.lifecycleDialog.action}
             confirmed={state.lifecycleDialog.confirmed ?? false}
+            autoJoin={state.lifecycleDialog.channel.autoJoin ?? false}
             undo={() => {
               // The toast outlives this dialog: Undo restores the channel it archived.
               if (archived) value.undoArchive(archived);

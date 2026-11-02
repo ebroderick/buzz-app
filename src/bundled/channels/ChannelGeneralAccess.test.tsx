@@ -138,6 +138,34 @@ it("keeps writes and consent closed when the fresh access read fails", async () 
   expect(h.save).not.toHaveBeenCalled();
 });
 
+it.each([
+  { autoJoin: true, option: "Private", note: true },
+  { autoJoin: true, option: "View only", note: false },
+  { autoJoin: false, option: "Private", note: false },
+])(
+  "starter channel $autoJoin → $option says new members resume if made public: $note",
+  async ({ autoJoin, option, note }) => {
+    const h = harness();
+    h.load.mockResolvedValue({ ...base, joinRole: "member" });
+    const user = userEvent.setup();
+    render(
+      <ChannelGeneralAccess
+        capability={h.capability}
+        channelId="alpha"
+        channel={{ id: "alpha", name: "Alpha", ...(autoJoin && { autoJoin }) }}
+      />,
+    );
+    await select(user, "General access", option);
+    const starter =
+      "It’s a starter channel, so new members will be added to it again if it’s made public. To stop that, turn off Starter channel for new members in Settings first.";
+    const confirm = await screen.findByRole("alertdialog", {
+      name: "Change general access?",
+    });
+    if (note) expect(confirm).toHaveTextContent(starter);
+    else expect(confirm).not.toHaveTextContent(starter);
+  },
+);
+
 const policies = [
   { visibility: "private", joinRole: "member", label: "Private" },
   { visibility: "private", joinRole: "guest", label: "Private" },
