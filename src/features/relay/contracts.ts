@@ -261,11 +261,6 @@ export interface ChannelQueries {
       progress?: ((found: PublicChannelSearch) => void) | undefined;
     },
   ): Promise<PublicChannelSearch>;
-  /** Ids of the active public channels the relay flags `auto_join` that the
-   * viewer has not joined, from the same bounded directory read as
-   * `searchPublic`. Candidates only: joining one re-reads its signed metadata
-   * and roster. */
-  defaultChannels?(options?: ReadOptions): Promise<readonly string[]>;
   /** NIP-CL lookup of the channels `creator` made with `label`, oldest first.
    * Includes the system channels the viewer can read, since `#P` asks for them.
    * Matches become readable through `get`; they never enter list(). */

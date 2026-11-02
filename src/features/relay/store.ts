@@ -2585,39 +2585,6 @@ export function createChannelStore(
       publicSearchReserve -= PUBLIC_CHANNEL_RESERVE_BYTES;
     }
   }
-  /** The post-join fallback's candidates: flagged, active, public, not joined;
-   * in the list's own order (name, then id). */
-  async function defaultChannels(settings?: ReadOptions) {
-    if (disposed || !transport || !discovery || options.cachedOnly)
-      throw new Error("Relay is unavailable");
-    if (list.status !== "ready")
-      throw new Error("Channel list is not ready for channel search");
-    const generation = epoch;
-    // Candidates only: a join re-reads each one, so a reused page never
-    // grants access by itself.
-    const entry = currentPublicDirectory(transport, generation);
-    const signal = settings?.signal;
-    signal?.throwIfAborted();
-    await new Promise<unknown>((resolve, reject) => {
-      signal?.addEventListener("abort", () => reject(signal.reason), {
-        once: true,
-      });
-      entry.read.then(resolve, reject);
-    });
-    if (disposed || generation !== epoch)
-      throw new DOMException("Stale channel search", "AbortError");
-    return [...latestPublicMetadata(entry.events).entries()]
-      .filter(
-        ([id, event]) =>
-          openMetadata(event) &&
-          !hasTag(event, "archived", "true") &&
-          event.tags.some(([key]) => key === "auto_join") &&
-          !discovery?.authorized(id),
-      )
-      .map(([id, event]) => ({ id, name: metadataName(event) ?? "" }))
-      .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id))
-      .map(({ id }) => id);
-  }
   /** NIP-CL lookup: the channels `creator` made with `label`, oldest first.
    * The page only names candidates; `resolve` re-reads each one before it
    * becomes readable through `get`. Matches never enter `list()`. */
@@ -3120,7 +3087,6 @@ export function createChannelStore(
     },
     resolve,
     searchPublic,
-    defaultChannels,
     findLabeled,
     matchPublic,
     readDirectory,

@@ -56,10 +56,10 @@ restore of the account's [known communities](#known-communities) joins each
 admitted destination through the same read and call. `Welcome` is also the
 second caller of the invite intent (`invite-intent.ts`) beside OS deep links:
 an address typed on the welcome screen that the restore did not admit opens
-this dialog, prefilled, as the app opens. A member newly admitted by an invite
-claim already has the community's default channels in the sidebar, and Messages
-opens the first of them. In an open community, which needs no claim, neither the
-relay nor the client joins them. See
+this dialog, prefilled, as the app opens. The relay adds a member newly admitted
+by an invite claim to the community's starter channels, so they are already in
+the sidebar and Messages opens the first of them. In an open community, which
+needs no claim, nobody is added. See
 [local-first launch](channels.md#local-first-launch).
 
 

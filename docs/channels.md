@@ -1256,37 +1256,13 @@ names are display data, not a confirmed preference mutation base. No cache means
 the ordinary cold connection flow; unavailable/corrupt storage never grants access.
 
 With no saved selection, Messages opens the first channel the relay flags
-`auto_join` (its default for new members), then the first non-Solo channel; an
-explicit empty route bypasses both. The relay joins a new member into its
-`auto_join` channels once, during the invite claim, and the resulting membership
-hints populate the sidebar live; it never re-adds them, so a later leave stands.
-`features/channels/default-channels.ts` backs up an add that failed at the
-claim, and only then: when the claim made on this device returned `joined`
-(never `already_member`), the `default-channels` view-state marker is `pending`.
-Once the live roster is verified, Messages records the flagged public channels
-the viewer is not in as owed (a capped directory read is final) and, only once
-that record is saved, joins each through the lifecycle owner. Channels the claim
-already added are never owed, so leaving one stands. An owed channel is dropped
-once it joins, may have joined (the relay accepted the join but it was not
-confirmed, including when Messages closed after sending it), is already joined,
-is no longer a flagged public channel or is definitively refused. A rate limit,
-a join that was never sent or leaving Messages before sending keeps it owed, and
-the next launch retries only owed channels the viewer is still not in. If a
-dropped channel cannot be saved, the marker is forgotten rather than left owing
-a channel the viewer may since have left. Runs can overlap, in two windows or
-when a replaced connection starts a newer run while an older one is still
-finishing a join. Each run saves only what the record still owes and joins only
-channels the record still owes, checking again just before each join is sent,
-and a result removes only its own channel from the record as saved at that
-moment, never undoing what the other run settled.
-Windows take turns updating the record.
-The marker becomes `done` when nothing is owed. Without a marker nothing runs,
-so upgrading, another device, cleared storage, a recovered claim whose reply
-was lost, and setup without an invite code never re-add channels the viewer
-left. Open communities, which require no claim, therefore get no client
-fallback: the relay advertises the flag there but auto-joins nobody, and the
-client cannot tell a newcomer from a returning member. Leaving the community
-purges the marker with the rest of the scope.
+`auto_join` (its starter channel for new members), then the first non-Solo
+channel; an explicit empty route bypasses both. The relay adds a new member to
+its `auto_join` channels itself, once, during the invite claim, and the resulting
+membership hints populate the sidebar live. The client only reads the flag: it
+never sends a join on a member's behalf, and the relay never re-adds a member,
+so a later leave stands. In an open community, which needs no claim, the relay
+advertises the flag but adds nobody.
 
 A cached roster can display previously downloaded, reverified history for up to
 24 hours. It cannot authorize head/history reads, unread evidence, typing or

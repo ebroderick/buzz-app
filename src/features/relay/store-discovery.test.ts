@@ -1586,46 +1586,6 @@ it("keeps the prior directory's names while a refresh reads, and when the refres
   expect(h.pending).toHaveLength(0);
 });
 
-it("lists the flagged, active, public channels the viewer has not joined as default candidates", async () => {
-  const h = setup();
-  h.channels.ensureList();
-  await h.rosters(1);
-  await h.metadata(1);
-  const joined = memberships[0] && tag(memberships[0], "d");
-  assert.exists(joined);
-  const flagged = (id: string, name: string, extra: string[][] = []) =>
-    metadata(relay, id, name, 1_700_000_000, [
-      ["public"],
-      ["t", "stream"],
-      ["auto_join"],
-      ...extra,
-    ]);
-  const done = h.channels.defaultChannels?.();
-  assert.exists(done);
-  const request = await h.next(39000);
-  expect(request.filters).toEqual([
-    { kinds: [39000], authors: [relay.pubkey], limit: 500 },
-  ]);
-  request.respond([
-    flagged("zz-welcome", "Welcome"),
-    flagged("aa-general", "General"),
-    flagged("archived", "Archived", [["archived", "true"]]),
-    metadata(relay, "private", "Private", 1_700_000_000, [
-      ["private"],
-      ["t", "stream"],
-      ["auto_join"],
-    ]),
-    metadata(relay, "plain", "Plain", 1_700_000_000, [
-      ["public"],
-      ["t", "stream"],
-    ]),
-    flagged(joined, "Joined"),
-  ]);
-  // Candidates only, in name order; joining each one re-reads it.
-  expect(await done).toEqual(["aa-general", "zz-welcome"]);
-  expect(h.pending).toHaveLength(0);
-});
-
 it("reads every public metadata page, and a keystroke that gives up leaves the read for the next", async () => {
   let clock = 1_000_000;
   const h = setup({ now: () => clock });
