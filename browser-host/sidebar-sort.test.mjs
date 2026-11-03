@@ -13,6 +13,7 @@ import {
   mutateSidebarFilter,
 } from "./sidebar-sort.mjs";
 import { projectSidebarPreferences } from "../src/features/relay/sidebar-preferences.ts";
+import { editSidebarRecord } from "../src/features/relay/sidebar-registers.ts";
 function harness() {
   const secret = generateSecretKey(),
     viewer = getPublicKey(secret);
@@ -38,6 +39,105 @@ function harness() {
   };
 }
 const intent = { group: "section:work", mode: "recent", sectionIds: ["work"] };
+it.each([undefined, "alpha", "recent"])(
+  "encrypts plugin choices from legacy %s without putting them in legacy sort fields and confirms reloads",
+  async (initialMode) => {
+    const h = harness();
+    const mode = "plugin:example.plugin/rows/reverse";
+    let head = h.encrypt({
+      version: 1,
+      groups: {
+        dms: "recent",
+        ...(initialMode ? { channels: initialMode } : {}),
+      },
+    });
+    const publish = vi.fn(async (event) => {
+      head = event;
+    });
+    const choose = (selected) =>
+      mutateSidebarSort(
+        { group: "channels", mode: selected, sectionIds: [] },
+        h.secret,
+        async () => [head],
+        publish,
+      );
+    expect(await choose(mode)).toEqual({ channels: mode, dms: "recent" });
+    expect(h.decode(head).groups).toEqual({ channels: "alpha", dms: "recent" });
+    expect(h.decode(head).meta.g.channels[2]).toBe("alpha");
+    expect(await choose(mode)).toEqual({ channels: mode, dms: "recent" });
+    expect(publish).toHaveBeenCalledOnce();
+    expect(await choose("alpha")).toEqual({ dms: "recent" });
+    expect(publish).toHaveBeenCalledTimes(2);
+  },
+);
+it.each(["dms", "channels"])(
+  "confirms only the requested plugin sort when an older client changes %s",
+  async (changedGroup) => {
+    const h = harness();
+    const mode = "plugin:example.plugin/rows/reverse";
+    let head = prepareSidebarSort(
+      [],
+      { group: "dms", mode, sectionIds: [] },
+      h.secret,
+      100_000,
+    ).event;
+    const publish = vi.fn(async (event) => {
+      const updated = editSidebarRecord(
+        "channel-sort",
+        h.decode(event),
+        event.created_at,
+        [[["g", changedGroup], "recent"]],
+        event.created_at * 1000 + 1,
+      );
+      head = h.encrypt(updated, { created_at: event.created_at + 1 });
+    });
+    const saved = mutateSidebarSort(
+      { group: "channels", mode, sectionIds: [] },
+      h.secret,
+      async () => [head],
+      publish,
+    );
+    if (changedGroup === "dms")
+      await expect(saved).resolves.toEqual({ channels: mode, dms: "recent" });
+    else await expect(saved).rejects.toThrow("changed on another device");
+    expect(publish).toHaveBeenCalledOnce();
+    expect(
+      projectSidebarPreferences(undefined, undefined, undefined, h.decode(head))
+        .sort,
+    ).toEqual(
+      changedGroup === "dms"
+        ? { channels: mode, dms: "recent" }
+        : { channels: "recent", dms: mode },
+    );
+  },
+);
+it("preserves another device's plugin choice when the writer has a stale section list", async () => {
+  const h = harness();
+  const mode = "plugin:example.plugin/rows/reverse";
+  let head = prepareSidebarSort(
+    [],
+    { group: "section:new", mode, sectionIds: ["new"] },
+    h.secret,
+    100_000,
+  ).event;
+  const saved = h.decode(head).pluginSort;
+  expect(
+    await mutateSidebarSort(
+      { group: "channels", mode: "recent", sectionIds: [] },
+      h.secret,
+      async () => [head],
+      async (event) => {
+        head = event;
+      },
+    ),
+  ).toEqual({ channels: "recent" });
+  const current = h.decode(head);
+  expect(current.pluginSort).toEqual(saved);
+  expect(
+    projectSidebarPreferences(undefined, undefined, undefined, current, ["new"])
+      .sort,
+  ).toEqual({ channels: "recent", "section:new": mode });
+});
 it("mutates only the selected register, imports recognized legacy modes, and encodes alpha as a tombstone", () => {
   const h = harness();
   const blob = {

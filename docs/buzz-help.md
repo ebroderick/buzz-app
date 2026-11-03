@@ -381,6 +381,11 @@ confirmation.
 
 - Plugins can add features. **Settings → Plugins → Manage plugins** controls
   them. Do not assume a particular optional plugin is on.
+  If a plugin hides the focused Team sidebar row, keyboard focus moves to a
+  remaining row in its section, or the section heading when none remains.
+  A saved plugin sort can briefly wait for its plugin at startup, within the
+  sidebar's 1.5-second loading budget. If unavailable, it falls back to A–Z
+  without forgetting the saved choice.
 - **Reminders** and **Workflows** start off on fresh installs. Upgrades preserve
   their previous state, including when no choice was saved. Enable or disable
   them in **Manage plugins**; saved choices persist.

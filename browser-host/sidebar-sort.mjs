@@ -114,7 +114,7 @@ function sectionChoice(coordinate, validIntent, edit, field) {
       intent.group,
       intent.mode,
       now,
-      intent.activeWindowSeconds,
+      field === "filters" ? intent.activeWindowSeconds : undefined,
     );
     const projected = project(blob, intent.sectionIds);
     if (Buffer.byteLength(JSON.stringify(blob)) > 128 * 1024)
@@ -163,8 +163,22 @@ function sectionChoice(coordinate, validIntent, edit, field) {
     await publish(draft.event);
     // This checks only the requested group now, not whether the whole-blob write
     // lost another device's intervening change to an unrelated group.
-    const confirmation = prepare(await readHead(), intent, secret);
-    if (confirmation.event)
+    const heads = await readHead();
+    const confirmation =
+      field === "sort"
+        ? {
+            groups:
+              project(
+                parseHead(heads, secret, intent.sectionIds).blob,
+                intent.sectionIds,
+              ).sort ?? {},
+          }
+        : prepare(heads, intent, secret);
+    if (
+      field === "sort"
+        ? (confirmation.groups[intent.group] ?? "alpha") !== intent.mode
+        : confirmation.event
+    )
       throw new Error(
         `Sidebar ${label} changed on another device; reload and try again`,
       );

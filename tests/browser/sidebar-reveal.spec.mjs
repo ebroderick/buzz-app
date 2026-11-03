@@ -58,6 +58,29 @@ const rows = (page, count) =>
     count,
   );
 
+// jsdom does not reject focus inside hidden/inert content. Use the real row
+// and disclosure owners here; preference-refresh permutations stay in Vitest.
+test("focus skips a row relocated into a collapsed section", async ({
+  page,
+}) => {
+  const { errors } = watchPageErrors(page);
+  await page.goto(url);
+  await update(page, { relocated: false });
+  const beta = page.locator('button[data-channel-id="beta"]');
+  await beta.focus();
+  await expect(beta).toBeFocused();
+
+  await update(page, { relocated: true });
+
+  await expect(
+    page.locator('[data-sidebar-section="starred"] [data-channel-id="beta"]'),
+  ).toBeHidden();
+  await expect(
+    page.getByRole("button", { name: "gamma", exact: true }),
+  ).toBeFocused();
+  expect(errors).toEqual([]);
+});
+
 test("restoring the saved position does not cancel a delayed entry's reveal", async ({
   page,
 }) => {

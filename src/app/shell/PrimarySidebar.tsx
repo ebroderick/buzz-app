@@ -41,6 +41,7 @@ import { readView, writeView } from "../../shared/view-state";
 import type { ChannelList } from "../../features/relay/contracts";
 import type { ContributionReader } from "../../features/conversation/contracts";
 import type { ChatIcon, ChatMenu } from "../../features/conversation/service";
+import type { SidebarRows } from "../../features/channel-navigation/sidebar-rows-service";
 import type { SidebarSections } from "../../features/channel-navigation/sidebar-sections-service";
 import { CommunitySignIn } from "../../features/federated-identity/CommunitySignIn";
 import type { FederatedIdentity } from "../../features/federated-identity/service";
@@ -64,6 +65,7 @@ type Props = {
   sidebarSections?: SidebarSections | undefined;
   /** A plugin restriction shows only Solo; the saved filter returns after. */
   sidebarScope?: SidebarScope | undefined;
+  sidebarRows?: SidebarRows | undefined;
   target: OpenTarget;
   children: ReactNode;
   creationAction?: ReactNode;
@@ -251,6 +253,7 @@ function ScopedSidebar({
           scope={scope}
           viewer={connection.viewer}
           sidebarSections={props.sidebarSections}
+          sidebarRows={props.sidebarRows}
           cached={!!connection.cached}
           layoutReady={filter === "team" || soloReady}
           connectionError={connection.error}

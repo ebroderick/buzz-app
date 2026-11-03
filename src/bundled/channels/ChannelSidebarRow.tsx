@@ -3,7 +3,14 @@ import { activeChannelRows } from "../../features/channel-navigation/active-chan
 import { NavigationItem } from "../../shared/design-system/ui/NavigationItem";
 import { IconButton } from "../../shared/design-system/ui/IconButton";
 import { BellSlashIcon, XIcon } from "../../shared/design-system/icons/index";
-import { useId, type ReactElement, type ReactNode } from "react";
+import { useIsPresent } from "motion/react";
+import {
+  useId,
+  useLayoutEffect,
+  useRef,
+  type ReactElement,
+  type ReactNode,
+} from "react";
 import type { ChannelSummary } from "../../features/relay/contracts";
 import styles from "./ChannelSidebarRow.module.css";
 
@@ -40,9 +47,57 @@ export function ChannelSidebarRow({
   onPrepare: (id: string) => void;
   onHideDm?: (id: string) => void;
 }) {
+  const selectRef = useRef<HTMLButtonElement>(null);
+  const present = useIsPresent();
+  useLayoutEffect(() => {
+    const button = selectRef.current;
+    if (!button || !present) return;
+    const document = button.ownerDocument;
+    const section = button.closest("[data-sidebar-section]");
+    const sidebar = section?.closest("nav");
+    return () => {
+      if (document.activeElement !== button) return;
+      const rows = [
+        ...(section?.querySelectorAll<HTMLElement>("button[data-channel-id]") ??
+          []),
+      ];
+      const index = rows.indexOf(button);
+      const neighborIds = [
+        ...rows.slice(index + 1),
+        ...rows.slice(0, index).reverse(),
+      ].map((row) => row.dataset.channelId ?? "");
+      // A plugin wrapper can remount this row and its neighbors. Resolve them
+      // after the commit, excluding retained exits and focus moved elsewhere.
+      queueMicrotask(() => {
+        if (
+          (document.activeElement !== document.body &&
+            document.activeElement !== button) ||
+          (button.isConnected && !button.closest("[inert]")) ||
+          !sidebar?.isConnected
+        )
+          return;
+        const liveRows = activeChannelRows(sidebar);
+        const sectionRows = activeChannelRows(section);
+        const candidates = [
+          liveRows.find((row) => row.dataset.channelId === channel.id),
+          ...neighborIds.map((id) =>
+            sectionRows.find((row) => row.dataset.channelId === id),
+          ),
+          section?.querySelector<HTMLElement>("details > summary"),
+        ];
+        for (const candidate of candidates) {
+          if (!candidate?.isConnected || candidate.closest("[hidden], [inert]"))
+            continue;
+          candidate.focus();
+          if (document.activeElement === candidate) break;
+        }
+      });
+    };
+  }, [channel.id, present]);
   const presenceId = useId();
   const selectButton = (
     <NavigationItem
+      ref={selectRef}
       type="button"
       data-channel-id={channel.id}
       data-working={working || undefined}

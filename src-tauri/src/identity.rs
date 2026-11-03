@@ -558,7 +558,7 @@ fn validate_sidebar_payload(coordinate: &str, value: &serde_json::Value) -> Resu
             coordinate,
             "channel-sections" | "channel-sort" | "channel-filter"
         ) {
-            validate_sidebar_meta(coordinate, meta)?;
+            validate_sidebar_meta(coordinate, meta, false)?;
             let projection = project_sidebar_meta(coordinate, meta);
             let projected = projection.as_object().ok_or_else(invalid)?;
             if projected
@@ -569,12 +569,28 @@ fn validate_sidebar_payload(coordinate: &str, value: &serde_json::Value) -> Resu
             }
         }
     }
+    if coordinate == "channel-sort" {
+        if let Some(choices) = data.get("pluginSort") {
+            if !choices
+                .get("g")
+                .and_then(|v| v.as_object())
+                .is_some_and(|g| g.len() <= 104)
+            {
+                return Err(invalid());
+            }
+            validate_sidebar_meta(coordinate, choices, true)?;
+        }
+    }
     Ok(())
 }
 
 // The signer admits only the bounded Desktop register schema, not arbitrary
 // renderer-controlled trees. Retained tombstones share the plaintext byte budget.
-fn validate_sidebar_meta(coordinate: &str, value: &serde_json::Value) -> Result<()> {
+fn validate_sidebar_meta(
+    coordinate: &str,
+    value: &serde_json::Value,
+    plugin_sort: bool,
+) -> Result<()> {
     use serde_json::Value;
     const MAX_SAFE: u64 = 9_007_199_254_740_991;
     fn text(value: &Value, max: usize) -> bool {
@@ -621,12 +637,16 @@ fn validate_sidebar_meta(coordinate: &str, value: &serde_json::Value) -> Result<
     let valid = if matches!(coordinate, "channel-sort" | "channel-filter") {
         map(meta.get("g"), 264, |v| {
             reg(v, |v| {
-                v.is_null()
-                    || if coordinate == "channel-filter" {
-                        matches!(v.as_str(), Some("unreads" | "active"))
-                    } else {
-                        matches!(v.as_str(), Some("alpha" | "recent"))
-                    }
+                if plugin_sort {
+                    v.as_str().is_some_and(valid_plugin_sidebar_sort_mode)
+                } else {
+                    v.is_null()
+                        || if coordinate == "channel-filter" {
+                            matches!(v.as_str(), Some("unreads" | "active"))
+                        } else {
+                            matches!(v.as_str(), Some("alpha" | "recent"))
+                        }
+                }
             })
         })
     } else {
@@ -650,6 +670,22 @@ fn validate_sidebar_meta(coordinate: &str, value: &serde_json::Value) -> Result<
         return Err(invalid());
     }
     Ok(())
+}
+
+fn valid_plugin_sidebar_sort_mode(value: &str) -> bool {
+    let Some(value) = value.strip_prefix("plugin:").filter(|_| value.len() <= 512) else {
+        return false;
+    };
+    let parts: Vec<_> = value.split('/').collect();
+    parts.len() == 3
+        && parts.iter().all(|part| {
+            part.as_bytes()
+                .first()
+                .is_some_and(u8::is_ascii_alphanumeric)
+                && part
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"._-".contains(&b))
+        })
 }
 
 // Called only after shape validation. Requiring these exact fields also binds

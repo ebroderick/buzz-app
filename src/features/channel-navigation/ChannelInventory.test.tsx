@@ -10,6 +10,9 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi, assert } from "vitest";
+import { Context } from "@deepseek-ai/cordis";
+import { PluginRuntime } from "../../plugins/runtime";
+import { SIDEBAR_REVEAL_BUDGET_MS } from "../../bundled/channels/useSidebarStartup";
 import { ToastProvider } from "../../shared/design-system/ui/Toast";
 import { DiscoveryState } from "../relay/discovery";
 import { keypair, metadata, roster, signed } from "../relay/testing";
@@ -23,6 +26,7 @@ import type {
   SidebarGroups,
   SidebarPreferences,
   SidebarFilterMode,
+  SidebarSortMode,
 } from "../relay/sidebar-preferences";
 import type { RelayData, RelaySnapshot } from "../relay/service";
 import type { ChannelList } from "../relay/contracts";
@@ -32,7 +36,14 @@ import type {
   SidebarSectionRow,
   SidebarSections,
 } from "./sidebar-sections-service";
-import { createRef, type ReactNode } from "react";
+import type {
+  RegisteredSidebarRows,
+  SidebarRows,
+  SidebarRowContribution,
+  SidebarRow,
+} from "./sidebar-rows-service";
+import { SidebarRowsService } from "./sidebar-rows-service";
+import { createRef, useState, type ReactNode, type ReactElement } from "react";
 import userEvent from "@testing-library/user-event";
 import { ChannelHeaderMenu } from "../../bundled/channels/ChannelHeaderMenu";
 import { PrimarySidebar } from "../../app/shell/PrimarySidebar";
@@ -117,11 +128,13 @@ function fixture(
     { id: "gamma", name: "gamma", channelType: "stream" },
   ],
   sidebarSections?: SidebarSections,
+  sidebarRows?: SidebarRows,
 ) {
   const owner = createRelaySession(null);
   owners.push(owner);
   let list: ChannelList = {
     status: "ready",
+    activityStatus: "unavailable",
     channels: initialChannels.map((channel) => ({
       space: "collaborative",
       ...channel,
@@ -225,6 +238,7 @@ function fixture(
               },
             }}
             sidebarSections={sidebarSections}
+            sidebarRows={sidebarRows}
           >
             {pages}
           </PrimarySidebar>
@@ -1578,8 +1592,25 @@ it.each(["archive", "unarchive", "delete"] as const)(
 function pendingLifecycle(
   action: "archive" | "delete" | "leave" | "hide",
   preferences?: Parameters<typeof fixture>[0],
+  sidebarRows?: SidebarRows,
+  unreadChannelId?: string,
 ) {
-  const h = fixture(preferences);
+  const h = fixture(preferences, "ready", undefined, undefined, sidebarRows);
+  if (unreadChannelId) {
+    const unread = h.session.unread;
+    const target = { kind: "channel" as const, channelId: unreadChannelId };
+    const snapshot = {
+      ...unread.snapshot(target),
+      manual: "local-only" as const,
+    };
+    h.session.unread = {
+      ...unread,
+      snapshot: (target) =>
+        target.kind === "channel" && target.channelId === unreadChannelId
+          ? snapshot
+          : unread.snapshot(target),
+    };
+  }
   const channel = h.list.channels[1];
   assert(channel);
   let finish!: () => void;
@@ -1704,14 +1735,199 @@ it("a failed lifecycle action releases its gate while keeping recovery visible",
 
 // Opening the sidebar's first row would scroll a long sidebar away from where
 // the channel was; its neighbor is already in view.
-it("deleting the open channel opens its neighbor after the roster drops it", async () => {
-  const h = pendingLifecycle("delete");
-  await h.start();
-  h.drop("beta");
-  await act(async () => h.finish());
+it.each([
+  {
+    name: "host neighbor",
+    before: [],
+    after: [],
+    reveal: false,
+    replacement: false,
+    next: "gamma",
+  },
+  {
+    name: "hidden neighbor",
+    before: ["gamma"],
+    after: [],
+    reveal: false,
+    replacement: false,
+    next: "alpha",
+  },
+  {
+    name: "neighbor hidden while pending",
+    before: [],
+    after: ["gamma"],
+    reveal: false,
+    replacement: false,
+    next: "alpha",
+  },
+  {
+    name: "newly visible neighbor",
+    before: ["gamma"],
+    after: ["alpha"],
+    reveal: true,
+    replacement: false,
+    next: "gamma",
+  },
+  {
+    name: "no visible neighbor",
+    before: ["gamma"],
+    after: ["alpha"],
+    reveal: false,
+    replacement: false,
+    next: undefined,
+  },
+  {
+    name: "visible replacement",
+    before: [],
+    after: [],
+    reveal: false,
+    replacement: true,
+    next: "gamma",
+  },
+])(
+  "deleting the open channel uses its $name after the roster drops it",
+  async ({ before, after, reveal, replacement, next }) => {
+    const registry = rowRegistry({
+      version: 1,
+      id: "visibility",
+      render: (row, Default) =>
+        row.label.startsWith("hidden ") ? null : replacement &&
+          row.id === "gamma" ? (
+          <button type="button">Replacement gamma</button>
+        ) : (
+          Default
+        ),
+    });
+    const h = pendingLifecycle("delete", undefined, registry);
+    try {
+      for (const id of before) h.publish(id, { name: `hidden ${id}` });
+      await h.start();
+      h.drop("beta");
+      for (const id of after) h.publish(id, { name: `hidden ${id}` });
+      if (reveal) h.publish("gamma", { name: "gamma" });
+      for (const id of [...before, ...after]) {
+        expect(
+          screen.queryByRole("button", { name: `hidden ${id}` }),
+        ).toBeNull();
+      }
+    } finally {
+      await act(async () => h.finish());
+    }
+    await waitFor(() =>
+      expect(h.navigator.open).toHaveBeenCalledWith(
+        expect.objectContaining(
+          next
+            ? { kind: "conversation", channelId: next }
+            : {
+                kind: "page",
+                pageId: "channels",
+                route: { version: 1, params: "empty" },
+              },
+        ),
+      ),
+    );
+    expect(h.navigator.open).toHaveBeenCalledOnce();
+  },
+);
+
+it.each(
+  (["delete", "leave"] as const).flatMap((action) =>
+    [false, true].map((hideUnread) => ({ action, hideUnread })),
+  ),
+)(
+  "pending $action recovers within the Unreads roster (hide remaining unread: $hideUnread)",
+  async ({ action, hideUnread }) => {
+    const registry = rowRegistry({
+      version: 1,
+      id: "visibility",
+      render: (row, Default) =>
+        row.id === "gamma" || row.label.startsWith("hidden ") ? null : Default,
+    });
+    const preferences = createSidebarPreferencesStore({
+      available: true,
+      read: async () => ({
+        sections: [],
+        assignments: {},
+        starred: [],
+        muted: [],
+        filters: { channels: "unreads" },
+      }),
+    });
+    await preferences.queries.ensure();
+    const h = pendingLifecycle(action, preferences.queries, registry, "alpha");
+    try {
+      const alpha = await screen.findByRole("button", { name: /^alpha/ });
+      expect(alpha).toBeVisible();
+      expect(
+        within(alpha).getByRole("img", {
+          name: "Marked unread on this device only",
+        }),
+      ).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "beta" })).toBeVisible();
+      expect(screen.queryByRole("button", { name: "gamma" })).toBeNull();
+      await h.start();
+      h.drop("beta");
+      if (hideUnread) h.publish("alpha", { name: "hidden alpha" });
+    } finally {
+      await act(async () => h.finish());
+      preferences.dispose();
+    }
+    await waitFor(() =>
+      expect(h.navigator.open).toHaveBeenCalledWith(
+        expect.objectContaining(
+          hideUnread
+            ? {
+                kind: "page",
+                pageId: "channels",
+                route: { version: 1, params: "empty" },
+              }
+            : { kind: "conversation", channelId: "alpha" },
+        ),
+      ),
+    );
+    expect(h.navigator.open).toHaveBeenCalledOnce();
+  },
+);
+
+it("deleting a custom-sorted channel opens its displayed neighbor after the roster drops it", async () => {
+  const registry = rowRegistry({
+    version: 1,
+    id: "order",
+    sortModes: [
+      {
+        id: "reverse",
+        label: "Reverse name",
+        compare: (a, b) => b.label.localeCompare(a.label),
+      },
+    ],
+  });
+  const preferences = createSidebarPreferencesStore({
+    available: true,
+    read: async () => ({
+      sections: [],
+      assignments: {},
+      starred: [],
+      muted: [],
+      sort: { channels: "plugin:fixture0/order/reverse" },
+    }),
+  });
+  await preferences.queries.ensure();
+  const h = pendingLifecycle("delete", preferences.queries, registry);
+  try {
+    await h.start();
+    expect(
+      [...document.querySelectorAll("[data-channel-id]")].map((row) =>
+        row.getAttribute("data-channel-id"),
+      ),
+    ).toEqual(["gamma", "beta", "alpha"]);
+    h.drop("beta");
+  } finally {
+    await act(async () => h.finish());
+    preferences.dispose();
+  }
   await waitFor(() =>
     expect(h.navigator.open).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: "conversation", channelId: "gamma" }),
+      expect.objectContaining({ kind: "conversation", channelId: "alpha" }),
     ),
   );
   expect(h.navigator.open).toHaveBeenCalledOnce();
@@ -2096,5 +2312,983 @@ it("promotes exactly the Bestie DM, restores prior local removal, and releases i
   } finally {
     lifetime.abort();
     library.dispose();
+  }
+});
+
+function rowRegistry(...values: SidebarRowContribution[]) {
+  const registered: readonly RegisteredSidebarRows[] = values.map(
+    (value, index) => ({
+      ...value,
+      key: `fixture${index}/${value.id}`,
+      pluginId: `fixture${index}`,
+      revision: "one",
+    }),
+  );
+  let entries = registered;
+  const listeners = new Set<() => void>();
+  return {
+    version: 1 as const,
+    snapshot: () => entries,
+    subscribe(listener: () => void) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    register: () => {},
+    disable() {
+      entries = [];
+      for (const listener of listeners) listener();
+    },
+    enable() {
+      entries = registered;
+      for (const listener of listeners) listener();
+    },
+  };
+}
+
+it.each([
+  "active",
+  "failed",
+  "budget",
+  "built-in",
+  "registered",
+  "unrelated-mode",
+  "mixed-sections",
+] as const)(
+  "keeps cold saved sorting stable through plugin startup: %s",
+  async (outcome) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const root = new Context();
+    let release!: () => void;
+    const loading = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let started!: () => void;
+    const loadingStarted = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const registeredPlugin =
+      outcome === "registered"
+        ? "delayed.rows"
+        : outcome === "unrelated-mode"
+          ? "unrelated.plugin"
+          : undefined;
+    const runtime = new PluginRuntime(root, async (plugin) => {
+      if (plugin.manifest.id !== registeredPlugin) {
+        started();
+        await loading;
+      }
+      if (plugin.manifest.id === "unrelated.plugin" && outcome === "registered")
+        return { apply() {} };
+      if (outcome === "failed") throw new Error("Plugin unavailable");
+      return {
+        apply(ctx) {
+          ctx.reflect.get("sidebarRows")?.register({
+            version: 1,
+            id: "order",
+            sortModes: [
+              {
+                id: "reverse",
+                label: "Reverse name",
+                compare: (a: SidebarRow, b: SidebarRow) =>
+                  b.label.localeCompare(a.label),
+              },
+            ],
+          });
+        },
+      };
+    });
+    const registry = new SidebarRowsService(root);
+    const registered = registeredPlugin
+      ? new Promise<void>((resolve) => {
+          const unsubscribe = runtime.subscribe(() => {
+            if (runtime.snapshot()[registeredPlugin]?.status !== "active")
+              return;
+            unsubscribe();
+            resolve();
+          });
+        })
+      : Promise.resolve();
+    const pendingPlugin =
+      outcome === "registered" ? "unrelated.plugin" : "delayed.rows";
+    const prefs = createSidebarPreferencesStore({
+      available: true,
+      read: async () => ({
+        sections: [],
+        assignments: {},
+        starred: [],
+        muted: [],
+        sort: {
+          channels:
+            outcome === "built-in"
+              ? "alpha"
+              : "plugin:delayed.rows/order/reverse",
+          ...(outcome === "mixed-sections" ? { dms: "alpha" as const } : {}),
+        },
+      }),
+    });
+    const order = () =>
+      [
+        ...document.querySelectorAll(
+          '[data-sidebar-section="channels"] [data-channel-id]',
+        ),
+      ].map((row) => row.getAttribute("data-channel-id"));
+    try {
+      runtime.reconcile(
+        ["delayed.rows", ...(registeredPlugin ? ["unrelated.plugin"] : [])].map(
+          (id) => ({
+            manifest: { id, name: id, apiVersion: 1 },
+            source: "external" as const,
+            revision: "one",
+            enabled: true,
+            previous: null,
+            reloadable: true,
+            error: null,
+          }),
+        ),
+      );
+      await loadingStarted;
+      await registered;
+      await prefs.queries.ensure();
+      const h = fixture(prefs.queries, "ready", undefined, undefined, registry);
+      await act(async () => {
+        render(h.view("alpha"));
+      });
+      expect(runtime.snapshot()[pendingPlugin]?.status).toBe("starting");
+      if (outcome === "built-in") {
+        expect(order()).toEqual(["alpha", "beta", "gamma"]);
+      } else if (outcome === "registered") {
+        expect(order()).toEqual(["gamma", "beta", "alpha"]);
+        expect(screen.queryByText("Loading your sidebar…")).toBeNull();
+      } else {
+        expect(order()).toEqual([]);
+        expect(screen.getByText("Loading your sidebar…")).toBeVisible();
+      }
+      if (outcome === "budget") {
+        await act(() =>
+          vi.advanceTimersByTimeAsync(SIDEBAR_REVEAL_BUDGET_MS - 1),
+        );
+        expect(order()).toEqual([]);
+        await act(() => vi.advanceTimersByTimeAsync(1));
+        expect(order()).toEqual(["alpha", "beta", "gamma"]);
+        expect(
+          screen.getByRole("complementary", { name: "Sidebar" }),
+        ).not.toHaveAttribute("aria-busy", "true");
+        expect(
+          screen.getByRole("complementary", { name: "Sidebar" }),
+        ).not.toHaveAttribute("data-buzz-launch-pending");
+      }
+      const finished = new Promise<void>((resolve) => {
+        const unsubscribe = runtime.subscribe(() => {
+          if (runtime.snapshot()[pendingPlugin]?.status === "starting") return;
+          unsubscribe();
+          resolve();
+        });
+      });
+      await act(async () => {
+        release();
+        await finished;
+      });
+      await act(() => vi.runOnlyPendingTimersAsync());
+      expect(order()).toEqual(
+        outcome === "failed" || outcome === "built-in"
+          ? ["alpha", "beta", "gamma"]
+          : ["gamma", "beta", "alpha"],
+      );
+      expect(screen.queryByText("Loading your sidebar…")).toBeNull();
+      expect(
+        screen.getByRole("complementary", { name: "Sidebar" }),
+      ).not.toHaveAttribute("aria-busy", "true");
+    } finally {
+      cleanup();
+      release();
+      prefs.dispose();
+      await runtime.dispose();
+      await root.fiber.dispose();
+      vi.useRealTimers();
+    }
+  },
+);
+
+it("reveals an unavailable saved sort when configuration settles and stays settled during later startup", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const root = new Context();
+  let configuring = true;
+  let release!: () => void;
+  const loading = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let started!: () => void;
+  const loadingStarted = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const runtime = new PluginRuntime(
+    root,
+    async () => {
+      started();
+      await loading;
+      return { apply() {} };
+    },
+    undefined,
+    () => configuring,
+  );
+  const registry = new SidebarRowsService(root);
+  const prefs = createSidebarPreferencesStore({
+    available: true,
+    read: async () => ({
+      sections: [],
+      assignments: {},
+      starred: [],
+      muted: [],
+      sort: { channels: "plugin:disabled.rows/order/reverse" },
+    }),
+  });
+  try {
+    await prefs.queries.ensure();
+    const h = fixture(prefs.queries, "ready", undefined, undefined, registry);
+    await act(async () => {
+      render(h.view("alpha"));
+    });
+    const sidebar = screen.getByRole("complementary", { name: "Sidebar" });
+    expect(screen.getByText("Loading your sidebar…")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "alpha" })).toBeNull();
+
+    await act(async () => {
+      configuring = false;
+      runtime.reconcile([]);
+    });
+    expect(screen.getByRole("button", { name: "alpha" })).toBeVisible();
+    expect(screen.queryByText("Loading your sidebar…")).toBeNull();
+    expect(sidebar).not.toHaveAttribute("aria-busy", "true");
+    expect(sidebar).not.toHaveAttribute("data-buzz-launch-pending");
+
+    await act(async () => {
+      runtime.reconcile([
+        {
+          manifest: {
+            id: "unrelated.plugin",
+            name: "Unrelated",
+            apiVersion: 1,
+          },
+          source: "external",
+          revision: "one",
+          enabled: true,
+          previous: null,
+          reloadable: true,
+          error: null,
+        },
+      ]);
+      await loadingStarted;
+    });
+    expect(runtime.snapshot()["unrelated.plugin"]?.status).toBe("starting");
+    expect(sidebar).not.toHaveAttribute("aria-busy", "true");
+    expect(sidebar).not.toHaveAttribute("data-buzz-launch-pending");
+    expect(screen.getByRole("button", { name: "alpha" })).toBeVisible();
+    expect(prefs.queries.snapshot().data?.sort?.channels).toBe(
+      "plugin:disabled.rows/order/reverse",
+    );
+
+    const finished = new Promise<void>((resolve) => {
+      const unsubscribe = runtime.subscribe(() => {
+        if (runtime.snapshot()["unrelated.plugin"]?.status === "starting")
+          return;
+        unsubscribe();
+        resolve();
+      });
+    });
+    await act(async () => {
+      release();
+      await finished;
+    });
+    expect(runtime.snapshot()["unrelated.plugin"]?.status).toBe("active");
+    expect(sidebar).not.toHaveAttribute("aria-busy", "true");
+    expect(sidebar).not.toHaveAttribute("data-buzz-launch-pending");
+  } finally {
+    cleanup();
+    release();
+    prefs.dispose();
+    await runtime.dispose();
+    await root.fiber.dispose();
+    vi.useRealTimers();
+  }
+});
+
+it("does not rebuild unrelated plugin rows when a row menu opens or closes", async () => {
+  const renderRow = vi.fn(
+    (_: SidebarRow, Default: ReactElement | null) => Default,
+  );
+  const registry = rowRegistry({
+    version: 1,
+    id: "observe",
+    render: renderRow,
+  });
+  const h = fixture(undefined, "ready", undefined, undefined, registry);
+  render(h.view("alpha"));
+  await screen.findByRole("button", { name: "gamma" });
+  renderRow.mockClear();
+  const beta = screen.getByRole("button", { name: "beta" });
+  beta.focus();
+  fireEvent.keyDown(beta, { key: "ContextMenu" });
+  const copyLink = await screen.findByRole("menuitem", { name: "Copy link" });
+  copyLink.focus();
+  expect(copyLink).toHaveFocus();
+  expect(
+    renderRow.mock.calls.map(([row]) => row.id).filter((id) => id !== "beta"),
+  ).toEqual([]);
+  renderRow.mockClear();
+  fireEvent.keyDown(copyLink, { key: "Escape" });
+  await waitFor(() =>
+    expect(screen.queryByRole("menu", { name: "Actions for beta" })).toBeNull(),
+  );
+  await waitFor(() => expect(beta).toHaveFocus());
+  expect(
+    renderRow.mock.calls.map(([row]) => row.id).filter((id) => id !== "beta"),
+  ).toEqual([]);
+});
+
+it("decorates live host rows and closes menus only when their row is hidden", async () => {
+  const registry = rowRegistry({
+    version: 1,
+    id: "decorate",
+    render: (row, Default) =>
+      row.channel.lastActivityAt === 1 ? null : row.id === "beta" ? (
+        <div data-decoration="beta">
+          {Default}
+          <span>Plugin detail</span>
+        </div>
+      ) : (
+        Default
+      ),
+  });
+  const h = fixture(undefined, "ready", undefined, undefined, registry);
+  render(h.view("beta"));
+  const beta = await screen.findByRole("button", { name: "beta" });
+  expect(beta).toHaveAttribute("aria-current", "page");
+  expect(beta.closest("[data-decoration]")).toHaveTextContent("Plugin detail");
+  expect(
+    screen.getByRole("button", { name: "alpha" }).closest("[data-decoration]"),
+  ).toBeNull();
+  beta.focus();
+  expect(beta).toHaveFocus();
+  fireEvent.click(beta);
+  expect(h.navigator.open).toHaveBeenCalled();
+  fireEvent.keyDown(beta, { key: "ContextMenu" });
+  const copyLink = await screen.findByRole("menuitem", { name: "Copy link" });
+  copyLink.focus();
+  expect(copyLink).toHaveFocus();
+
+  h.publish("alpha", { lastActivityAt: 1 });
+  expect(screen.queryByRole("button", { name: "alpha" })).toBeNull();
+  expect(screen.getByRole("menu", { name: "Actions for beta" })).toBeVisible();
+  expect(copyLink).toHaveFocus();
+
+  h.publish("beta", { lastActivityAt: 1 });
+  expect(screen.queryByRole("button", { name: "beta" })).toBeNull();
+  await waitFor(() =>
+    expect(screen.queryByRole("menu", { name: "Actions for beta" })).toBeNull(),
+  );
+  await waitFor(() =>
+    expect(
+      screen.getByLabelText("Channels", { selector: "summary" }),
+    ).toHaveFocus(),
+  );
+
+  h.publish("beta", { lastActivityAt: 0 });
+  expect(await screen.findByRole("button", { name: "beta" })).toBeVisible();
+  expect(screen.queryByRole("menu", { name: "Actions for beta" })).toBeNull();
+});
+
+it.each(["enable", "disable"] as const)(
+  "preserves host row identity and focus on renderer %s",
+  async (transition) => {
+    const registry = rowRegistry({
+      version: 1,
+      id: "unchanged",
+      render: (_, Default) => Default,
+    });
+    if (transition === "enable") registry.disable();
+    const h = fixture(undefined, "ready", undefined, undefined, registry);
+    render(h.view("alpha"));
+    const alpha = await screen.findByRole("button", { name: "alpha" });
+    alpha.focus();
+    expect(alpha).toHaveFocus();
+
+    act(() => registry[transition]());
+
+    expect(screen.getByRole("button", { name: "alpha" })).toBe(alpha);
+    expect(alpha).toHaveFocus();
+  },
+);
+
+it.each([
+  {
+    focused: "alpha",
+    hidden: ["alpha"],
+    destination: "beta",
+    activate: true,
+  },
+  { focused: "beta", hidden: ["beta"], destination: "gamma" },
+  { focused: "gamma", hidden: ["gamma"], destination: "beta" },
+  {
+    focused: "beta",
+    hidden: ["alpha", "beta", "gamma"],
+    destination: "Channels",
+  },
+  {
+    focused: "beta",
+    hidden: ["beta"],
+    destination: "alpha",
+    moveFocus: true,
+  },
+])(
+  "recovers focus from plugin-hidden $focused to $destination (hidden: $hidden)",
+  async ({ focused, hidden, destination, moveFocus, activate }) => {
+    const registry = rowRegistry({
+      version: 1,
+      id: "live-hide",
+      render: (row, Default) => {
+        if (activate)
+          return hidden.includes(row.id) ? null : <div>{Default}</div>;
+        return row.channel.lastActivityAt === 1 ? null : Default;
+      },
+    });
+    if (activate) registry.disable();
+    const h = fixture(undefined, "ready", undefined, undefined, registry);
+    render(h.view("alpha"));
+    const row = await screen.findByRole("button", { name: focused });
+    row.focus();
+    expect(row).toHaveFocus();
+
+    await act(async () => {
+      if (activate) registry.enable();
+      else for (const id of hidden) h.publish(id, { lastActivityAt: 1 });
+      if (moveFocus) screen.getByRole("button", { name: "alpha" }).focus();
+    });
+
+    expect(screen.queryByRole("button", { name: focused })).toBeNull();
+    const target =
+      destination === "Channels"
+        ? screen.getByLabelText("Channels", { selector: "summary" })
+        : screen.getByRole("button", { name: destination });
+    expect(target).toHaveFocus();
+  },
+);
+
+it.each([
+  { change: "star", collapsed: false },
+  { change: "assignment", collapsed: false },
+  { change: "star", collapsed: true },
+  { change: "assignment", collapsed: true },
+])(
+  "recovers focus after external $change relocation (collapsed: $collapsed)",
+  async ({ change, collapsed }) => {
+    let saved: SidebarPreferences = {
+      sections: [{ id: "work", name: "Work", order: 0 }],
+      assignments: {},
+      starred: [],
+      muted: [],
+    };
+    const preferences = createSidebarPreferencesStore({
+      available: true,
+      read: async () => saved,
+    });
+    await preferences.queries.ensure();
+    const h = fixture(preferences.queries);
+    try {
+      const sectionKey = change === "star" ? "starred" : "group:work";
+      if (collapsed)
+        writeView(h.session.scope, "channel-sidebar", {
+          collapsed: [sectionKey],
+          scrollTop: 0,
+        });
+      const mounted = render(h.view("alpha"));
+      const beta = await screen.findByRole("button", { name: "beta" });
+      beta.focus();
+      expect(beta).toHaveFocus();
+
+      saved = {
+        ...saved,
+        ...(change === "star"
+          ? { starred: ["beta"] }
+          : { assignments: { beta: "work" } }),
+      };
+      await act(() => preferences.queries.refresh());
+
+      const relocated = mounted.container.querySelector(
+        'button[data-channel-id="beta"]',
+      );
+      expect(relocated?.closest("[data-sidebar-section]")).toHaveAttribute(
+        "data-sidebar-section",
+        sectionKey,
+      );
+      if (collapsed) {
+        expect(relocated?.closest("[hidden][inert]")).not.toBeNull();
+        expect(screen.getByRole("button", { name: "gamma" })).toHaveFocus();
+      } else expect(relocated).toHaveFocus();
+    } finally {
+      preferences.dispose();
+    }
+  },
+);
+
+it("can replace or hide a chosen row without changing its siblings", async () => {
+  const registry = rowRegistry({
+    version: 1,
+    id: "replace",
+    render: (row, Default) =>
+      row.id === "beta" ? (
+        <span>Replacement animation</span>
+      ) : row.id === "gamma" ? null : (
+        Default
+      ),
+  });
+  const h = fixture(undefined, "ready", undefined, undefined, registry);
+  render(h.view("alpha"));
+  expect(await screen.findByText("Replacement animation")).toBeVisible();
+  expect(screen.queryByRole("button", { name: "beta" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "gamma" })).toBeNull();
+  expect(screen.getByRole("button", { name: "alpha" })).toBeVisible();
+  act(() => registry.disable());
+  expect(await screen.findByRole("button", { name: "beta" })).toBeVisible();
+  expect(screen.getByRole("button", { name: "gamma" })).toBeVisible();
+  expect(screen.queryByText("Replacement animation")).toBeNull();
+});
+
+it.each(["enable", "disable", "update"] as const)(
+  "contains a hook-calling row callback on %s without losing the sidebar",
+  async (transition) => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const registry = rowRegistry({
+      version: 1,
+      id: "hook-callback",
+      render: function useBrokenRow(row, Default) {
+        if (row.id !== "beta" || row.channel.lastActivityAt === 1)
+          return Default;
+        // biome-ignore lint/correctness/useHookAtTopLevel: Exercise a plugin violating the callback contract.
+        const [detail] = useState("Plugin detail");
+        return (
+          <div>
+            {Default}
+            <span>{detail}</span>
+          </div>
+        );
+      },
+    });
+    if (transition === "enable") registry.disable();
+    try {
+      const h = fixture(undefined, "ready", undefined, undefined, registry);
+      render(h.view("beta"));
+      const alpha = await screen.findByRole("button", { name: "alpha" });
+      expect(screen.getByRole("button", { name: "beta" })).toHaveAttribute(
+        "aria-current",
+        "page",
+      );
+      if (transition === "update") h.publish("beta", { lastActivityAt: 1 });
+      else act(() => registry[transition]());
+      expect(screen.getByRole("button", { name: "beta" })).toHaveAttribute(
+        "aria-current",
+        "page",
+      );
+      expect(screen.getByRole("button", { name: "alpha" })).toBe(alpha);
+      expect(screen.getByRole("button", { name: "gamma" })).toBeVisible();
+      expect(screen.queryByText("Plugin detail")).toBeNull();
+    } finally {
+      error.mockRestore();
+    }
+  },
+);
+
+function BrokenRow(): never {
+  throw new Error("broken child");
+}
+
+it.each(["callback", "child", "invalid"] as const)(
+  "falls back to the live host row for a %s failure only",
+  async (failure) => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const registry = rowRegistry({
+      version: 1,
+      id: "broken",
+      render: (row, Default) => {
+        if (row.id !== "beta")
+          return <div data-decoration="healthy">{Default}</div>;
+        if (row.channel.lastActivityAt === 1)
+          return <div data-decoration="recovered">{Default}</div>;
+        if (failure === "callback") throw new Error("broken callback");
+        return failure === "child" ? <BrokenRow /> : ({} as never);
+      },
+    });
+    try {
+      const h = fixture(undefined, "ready", undefined, undefined, registry);
+      render(h.view("beta"));
+      const beta = await screen.findByRole("button", { name: "beta" });
+      expect(beta).toHaveAttribute("aria-current", "page");
+      expect(beta.closest("[data-decoration]")).toBeNull();
+      expect(
+        screen
+          .getByRole("button", { name: "alpha" })
+          .closest("[data-decoration]"),
+      ).not.toBeNull();
+      expect(screen.getByRole("button", { name: "gamma" })).toBeVisible();
+      beta.focus();
+      h.publish("beta", { lastActivityAt: 2 });
+      if (failure !== "child") {
+        expect(screen.getByRole("button", { name: "beta" })).toBe(beta);
+        expect(beta).toHaveFocus();
+      }
+      h.publish("beta", { lastActivityAt: 1 });
+      expect(
+        screen
+          .getByRole("button", { name: "beta" })
+          .closest("[data-decoration]"),
+      ).toHaveAttribute("data-decoration", "recovered");
+
+      screen.getByRole("button", { name: "beta" }).focus();
+      await act(async () => h.publish("beta", { lastActivityAt: 3 }));
+      const fallback = screen.getByRole("button", { name: "beta" });
+      expect(fallback.closest("[data-decoration]")).toBeNull();
+      expect(fallback).toHaveFocus();
+
+      await act(async () => h.publish("beta", { lastActivityAt: 1 }));
+      screen.getByRole("button", { name: "beta" }).focus();
+      const alpha = screen.getByRole("button", { name: "alpha" });
+      await act(async () => {
+        h.publish("beta", { lastActivityAt: 4 });
+        alpha.focus();
+      });
+      expect(alpha).toHaveFocus();
+    } finally {
+      error.mockRestore();
+    }
+  },
+);
+
+it("composes two plugins around the preceding result", async () => {
+  const registry = rowRegistry(
+    {
+      version: 1,
+      id: "first",
+      render: (_, Default) => <div data-layer="inner">{Default}</div>,
+    },
+    {
+      version: 1,
+      id: "second",
+      render: (_, Default) => <div data-layer="outer">{Default}</div>,
+    },
+  );
+  const h = fixture(undefined, "ready", undefined, undefined, registry);
+  render(h.view("alpha"));
+  const alpha = await screen.findByRole("button", { name: "alpha" });
+  expect(alpha.closest('[data-layer="inner"]')?.parentElement).toHaveAttribute(
+    "data-layer",
+    "outer",
+  );
+});
+
+it.each([
+  { sectionKey: "channels", preferenceKey: "channels", label: "Channels" },
+  { sectionKey: "group:work", preferenceKey: "section:work", label: "Work" },
+])(
+  "persists a plugin sort for $sectionKey across disable and re-enable",
+  async ({ sectionKey, preferenceKey, label }) => {
+    const registry = rowRegistry({
+      version: 1,
+      id: "order",
+      sortModes: [
+        {
+          id: "reverse",
+          label: "Reverse name",
+          compare: (a, b) => b.label.localeCompare(a.label),
+        },
+      ],
+    });
+    let sort: Record<string, SidebarSortMode> = {};
+    const writeSort = vi.fn(async (key: string, mode: SidebarSortMode) => {
+      sort = { ...sort, [key]: mode };
+      return sort;
+    });
+    const prefs = createSidebarPreferencesStore({
+      available: true,
+      read: async () => ({
+        sections:
+          sectionKey === "channels"
+            ? []
+            : [{ id: "work", name: "Work", order: 0 }],
+        assignments:
+          sectionKey === "channels"
+            ? {}
+            : { alpha: "work", beta: "work", gamma: "work" },
+        starred: [],
+        muted: [],
+        sort,
+      }),
+      writeSort,
+    });
+    const h = fixture(prefs.queries, "ready", undefined, undefined, registry);
+    const user = userEvent.setup();
+    try {
+      const mounted = render(h.view("alpha"));
+      await screen.findByRole("button", { name: "gamma" });
+      const order = () =>
+        [
+          ...document.querySelectorAll(
+            `[data-sidebar-section="${sectionKey}"] [data-channel-id]`,
+          ),
+        ].map((el) => el.getAttribute("data-channel-id"));
+      expect(order()).toEqual(["alpha", "beta", "gamma"]);
+      await user.click(
+        screen.getByRole("button", { name: `More actions for ${label}` }),
+      );
+      await user.click(await screen.findByRole("menuitem", { name: "Sort" }));
+      fireEvent.click(
+        await screen.findByRole("menuitemradio", { name: "Reverse name" }),
+      );
+      await waitFor(() => expect(order()).toEqual(["gamma", "beta", "alpha"]));
+      expect(writeSort).toHaveBeenCalledWith(
+        preferenceKey,
+        "plugin:fixture0/order/reverse",
+        sectionKey === "channels" ? [] : ["work"],
+        expect.any(AbortSignal),
+      );
+      mounted.unmount();
+      render(h.view("alpha"));
+      await waitFor(() => expect(order()).toEqual(["gamma", "beta", "alpha"]));
+      act(() => registry.disable());
+      await waitFor(() => expect(order()).toEqual(["alpha", "beta", "gamma"]));
+      expect(sort[preferenceKey]).toBe("plugin:fixture0/order/reverse");
+      await user.click(
+        screen.getByRole("button", { name: `More actions for ${label}` }),
+      );
+      await user.click(await screen.findByRole("menuitem", { name: "Sort" }));
+      expect(
+        screen.queryByRole("menuitemradio", { name: "Reverse name" }),
+      ).toBeNull();
+      act(() => registry.enable());
+      await waitFor(() => expect(order()).toEqual(["gamma", "beta", "alpha"]));
+      expect(writeSort).toHaveBeenCalledOnce();
+    } finally {
+      prefs.dispose();
+    }
+  },
+);
+
+it.each(["throw", "non-finite"] as const)(
+  "retains the section roster and host order when a comparator returns %s",
+  async (failure) => {
+    const registry = rowRegistry({
+      version: 1,
+      id: "order",
+      sortModes: [
+        {
+          id: "broken",
+          label: "Broken sort",
+          compare: (a, b) => {
+            if (failure === "throw") throw new Error("broken sort");
+            return a.id === "gamma" || b.id === "gamma"
+              ? NaN
+              : b.label.localeCompare(a.label);
+          },
+        },
+      ],
+    });
+    const prefs = createSidebarPreferencesStore({
+      available: true,
+      read: async () => ({
+        sections: [],
+        assignments: {},
+        starred: [],
+        muted: [],
+        sort: { channels: "plugin:fixture0/order/broken" },
+      }),
+      writeSort: async () => ({ channels: "plugin:fixture0/order/broken" }),
+    });
+    const h = fixture(prefs.queries, "ready", undefined, undefined, registry);
+    try {
+      render(h.view("alpha"));
+      await screen.findByRole("button", { name: "gamma" });
+      expect(
+        [
+          ...document.querySelectorAll(
+            '[data-sidebar-section="channels"] [data-channel-id]',
+          ),
+        ].map((el) => el.getAttribute("data-channel-id")),
+      ).toEqual(["alpha", "beta", "gamma"]);
+      const user = userEvent.setup();
+      await user.click(
+        screen.getByRole("button", { name: "More actions for Channels" }),
+      );
+      await user.click(await screen.findByRole("menuitem", { name: "Sort" }));
+      expect(
+        await screen.findByRole("menuitemradio", { name: "Broken sort" }),
+      ).toHaveAttribute("aria-checked", "true");
+    } finally {
+      prefs.dispose();
+    }
+  },
+);
+
+it("supplies DM identity and live channel metadata without replacing its host row", async () => {
+  const registry = rowRegistry({
+    version: 1,
+    id: "details",
+    render: (row, Default) =>
+      row.kind === "dm" ? (
+        <div data-dm-decoration={row.id}>
+          {Default}
+          <span>Activity {row.channel.lastActivityAt ?? "unknown"}</span>
+        </div>
+      ) : (
+        Default
+      ),
+  });
+  const h = fixture(
+    undefined,
+    "ready",
+    [
+      { id: "alpha", name: "alpha", channelType: "stream" },
+      {
+        id: "dm",
+        name: "Alice",
+        channelType: "dm",
+        visibility: "private",
+        lastActivityAt: 12,
+      },
+    ],
+    undefined,
+    registry,
+  );
+  render(h.view("dm"));
+  const dm = await screen.findByRole("button", { name: "Alice" });
+  expect(dm).toHaveAttribute("aria-current", "page");
+  expect(dm.closest("[data-dm-decoration]")).toHaveAttribute(
+    "data-dm-decoration",
+    "dm",
+  );
+  expect(screen.getByText("Activity 12")).toBeVisible();
+  h.publish("dm", { lastActivityAt: 24 });
+  expect(await screen.findByText("Activity 24")).toBeVisible();
+  expect(
+    screen
+      .getByRole("button", { name: "alpha" })
+      .closest("[data-dm-decoration]"),
+  ).toBeNull();
+});
+
+it("updates decorated unread data and a selected unread sort without rewriting preferences", async () => {
+  const renderRow = vi.fn((row: SidebarRow, Default: ReactElement | null) => (
+    <div
+      data-unread-row={row.id}
+      data-observed-count={row.unread.observedCount ?? "unknown"}
+    >
+      {Default}
+    </div>
+  ));
+  const registry = rowRegistry({
+    version: 1,
+    id: "unread",
+    render: renderRow,
+    sortModes: [
+      {
+        id: "unread",
+        label: "Unread first",
+        compare: (a, b) =>
+          (b.unread.observedCount ?? 0) - (a.unread.observedCount ?? 0),
+      },
+    ],
+  });
+  const writeSort = vi.fn(async (key: string, mode: SidebarSortMode) => ({
+    [key]: mode,
+  }));
+  const prefs = createSidebarPreferencesStore({
+    available: true,
+    read: async () => ({
+      sections: [],
+      assignments: {},
+      starred: [],
+      muted: [],
+      sort: {},
+    }),
+    writeSort,
+  });
+  const h = fixture(prefs.queries, "ready", undefined, undefined, registry);
+  const original = h.session.unread;
+  const snapshots = new Map(
+    ["alpha", "beta", "gamma"].map((id) => [
+      id,
+      original.snapshot({ kind: "channel", channelId: id }),
+    ]),
+  );
+  const listeners = new Map<string, Set<() => void>>();
+  h.session.unread = {
+    ...original,
+    snapshot: (target) =>
+      target.kind === "channel"
+        ? (snapshots.get(target.channelId) ?? original.snapshot(target))
+        : original.snapshot(target),
+    subscribe: (target, listener) => {
+      if (target.kind !== "channel")
+        return original.subscribe(target, listener);
+      const set = listeners.get(target.channelId) ?? new Set();
+      listeners.set(target.channelId, set);
+      set.add(listener);
+      return () => {
+        set.delete(listener);
+      };
+    },
+  };
+  const publish = (count: number | null) =>
+    act(() => {
+      const previous = snapshots.get("beta");
+      assert(previous);
+      snapshots.set("beta", {
+        ...previous,
+        observedCount: count,
+        attentionCount: count,
+        coverage: count === null ? "unknown" : "observed",
+        freshness: count === null ? "unknown" : "observed",
+      });
+      for (const listener of listeners.get("beta") ?? []) listener();
+    });
+  const order = () =>
+    [
+      ...document.querySelectorAll(
+        '[data-sidebar-section="channels"] [data-channel-id]',
+      ),
+    ].map((el) => el.getAttribute("data-channel-id"));
+  try {
+    render(h.view("alpha"));
+    await screen.findByRole("button", { name: "gamma" });
+    expect(document.querySelector('[data-unread-row="beta"]')).toHaveAttribute(
+      "data-observed-count",
+      "unknown",
+    );
+    renderRow.mockClear();
+    publish(2);
+    expect(document.querySelector('[data-unread-row="beta"]')).toHaveAttribute(
+      "data-observed-count",
+      "2",
+    );
+    expect(renderRow.mock.calls.map(([row]) => row.id)).toEqual(["beta"]);
+    expect(order()).toEqual(["alpha", "beta", "gamma"]);
+    const user = userEvent.setup();
+    await user.click(
+      screen.getByRole("button", { name: "More actions for Channels" }),
+    );
+    await user.click(await screen.findByRole("menuitem", { name: "Sort" }));
+    fireEvent.click(
+      await screen.findByRole("menuitemradio", { name: "Unread first" }),
+    );
+    await waitFor(() => expect(order()).toEqual(["beta", "alpha", "gamma"]));
+    expect(writeSort).toHaveBeenCalledOnce();
+    publish(null);
+    await waitFor(() => expect(order()).toEqual(["alpha", "beta", "gamma"]));
+    publish(3);
+    await waitFor(() => expect(order()).toEqual(["beta", "alpha", "gamma"]));
+    expect(document.querySelector('[data-unread-row="beta"]')).toHaveAttribute(
+      "data-observed-count",
+      "3",
+    );
+    expect(writeSort).toHaveBeenCalledOnce();
+  } finally {
+    prefs.dispose();
   }
 });

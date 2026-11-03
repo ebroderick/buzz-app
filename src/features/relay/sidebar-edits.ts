@@ -1,3 +1,4 @@
+import { isSidebarSortMode } from "./sidebar-sort.ts";
 import {
   projectSidebarPreferences,
   validActiveWindow,
@@ -9,6 +10,7 @@ import {
 } from "./sidebar-preferences.ts";
 import {
   editSidebarRecord,
+  editSidebarSortRecord,
   nextSidebarSectionOrder,
   projectSidebarRecord,
 } from "./sidebar-registers.ts";
@@ -127,7 +129,7 @@ export function validSidebarSort(
 ): boolean {
   return (
     group.length <= 264 &&
-    ["alpha", "recent"].includes(mode) &&
+    isSidebarSortMode(mode) &&
     sectionIds.length <= 100 &&
     sectionIds.every(validSidebarChannelId) &&
     (["starred", "channels", "forums", "dms"].includes(group) ||
@@ -200,13 +202,7 @@ export function editSidebarSort(
   mode: SidebarSortMode,
   now = Date.now(),
 ): Record<string, unknown> {
-  return editSidebarRecord(
-    "channel-sort",
-    current,
-    createdAt,
-    [[["g", group], mode === "alpha" ? null : mode]],
-    now,
-  );
+  return editSidebarSortRecord(current, createdAt, group, mode, now);
 }
 
 export function editSidebarFilter(

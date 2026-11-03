@@ -770,3 +770,37 @@ async fn main_agent_signer_admits_one_agent_or_a_cleared_choice() {
             .is_err());
     }
 }
+
+#[test]
+fn sidebar_plugin_sort_registers_are_bounded_and_namespaced() {
+    use serde_json::json;
+    for mode in [
+        "plugin:example.plugin/rows/reverse",
+        &format!("plugin:a/b/{}", "x".repeat(501)),
+    ] {
+        let record = json!({"version":1,"groups":{"dms":"recent"},"meta":{"v":1,"g":{"channels":[100,"1234567890abcdef",null],"dms":[99,"1234567890abcdef","recent"]}},"pluginSort":{"v":1,"g":{"channels":[100,"1234567890abcdef",mode]}}});
+        assert!(super::validate_sidebar_payload("channel-sort", &record).is_ok());
+    }
+    for mode in [
+        "plugin:x",
+        "alpha",
+        "recent",
+        "plugin:a/b/",
+        "plugin:a/b/c/d",
+        "plugin:A/b/c",
+        &format!("plugin:a/b/{}", "x".repeat(502)),
+    ] {
+        let record = json!({"version":1,"groups":{},"meta":{"v":1,"g":{"channels":[100,"1234567890abcdef",null]}},"pluginSort":{"v":1,"g":{"channels":[100,"1234567890abcdef",mode]}}});
+        assert!(super::validate_sidebar_payload("channel-sort", &record).is_err());
+    }
+    for choices in [
+        json!({"v":2,"g":{}}),
+        json!({"v":1}),
+        json!({"v":1,"g":{"channels":[100,"bad-device","plugin:a/b/c"]}}),
+        json!({"v":1,"g":{"channels":[-1,"1234567890abcdef","plugin:a/b/c"]}}),
+        json!({"v":1,"g":{"channels":[100,"1234567890abcdef",null]}}),
+    ] {
+        let record = json!({"version":1,"groups":{},"pluginSort":choices});
+        assert!(super::validate_sidebar_payload("channel-sort", &record).is_err());
+    }
+}

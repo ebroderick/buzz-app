@@ -28,6 +28,12 @@ export type {
   Pages,
 } from "../features/pages/service";
 export type {
+  SidebarRow,
+  SidebarRowSortMode,
+  SidebarRowContribution,
+  SidebarRows,
+} from "../features/channel-navigation/sidebar-rows-service";
+export type {
   SidebarSectionAction,
   SidebarSectionContribution,
   SidebarSectionRow,

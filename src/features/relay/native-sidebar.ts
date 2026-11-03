@@ -362,7 +362,13 @@ export function nativeSidebar(transport: ReadTransport) {
       if (!validSidebarSort(group, mode, sectionIds))
         throw new Error("Invalid sidebar sort intent");
       const prepare = (current: Record<string, unknown>, createdAt: number) => {
-        const next = editSidebarSort(current, createdAt, group, mode);
+        const next = editSidebarSort(
+          current,
+          createdAt,
+          group,
+          mode,
+          Date.now(),
+        );
         return {
           next,
           result: project("channel-sort", next, sectionIds).sort ?? {},
@@ -373,7 +379,8 @@ export function nativeSidebar(transport: ReadTransport) {
         signal,
         prepare,
         (value) =>
-          ((value.groups as Record<string, string>)[group] ?? "alpha") === mode,
+          (project("channel-sort", value, sectionIds).sort?.[group] ??
+            "alpha") === mode,
         "Sidebar sort changed on another device; reload and try again",
       );
     },

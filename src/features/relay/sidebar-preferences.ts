@@ -1,4 +1,9 @@
-import { projectSidebarRecord } from "./sidebar-registers.ts";
+import { isSidebarSortMode, type SidebarSortMode } from "./sidebar-sort.ts";
+export type { SidebarSortMode } from "./sidebar-sort.ts";
+import {
+  projectSidebarRecord,
+  projectSidebarSort,
+} from "./sidebar-registers.ts";
 import type { ReadFilter } from "./events.ts";
 import type { RelayEvent } from "./events.ts";
 import type { RelayReader } from "./reader.ts";
@@ -74,7 +79,6 @@ export type SidebarFilterMutator = (
   signal: AbortSignal,
   activeWindowSeconds?: number | null,
 ) => Promise<SidebarFilterSettings>;
-export type SidebarSortMode = "alpha" | "recent";
 export type SidebarSortMutator = (
   group: string,
   mode: SidebarSortMode,
@@ -217,19 +221,17 @@ export function projectSidebarPreferences(
     }
   }
   if (sort !== undefined) {
-    const data = projectSidebarRecord("channel-sort", object(sort));
+    const data = object(sort);
     if (data.version !== 1) throw new Error("Unsupported sidebar sort");
-    const entries = Object.entries(object(data.groups));
-    if (entries.length > 104) throw new Error("Sidebar sort budget exceeded");
+    const entries = Object.entries(projectSidebarSort(data));
     const fixed = new Set(["starred", "channels", "forums", "dms"]);
     const liveSections = new Set(
       (sortSectionIds ?? []).map((id) => `section:${id}`),
     );
     result.sort = Object.fromEntries(
       entries
-        .filter(
-          (entry): entry is [string, SidebarSortMode] =>
-            entry[1] === "alpha" || entry[1] === "recent",
+        .filter((entry): entry is [string, SidebarSortMode] =>
+          isSidebarSortMode(entry[1]),
         )
         .map(([key, mode]) => [text(key, 264), mode] as const)
         .filter(

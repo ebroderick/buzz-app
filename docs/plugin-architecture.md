@@ -365,6 +365,114 @@ banner that throws renders nothing and leaves the sidebar usable. It changes
 only the sidebar: links, search and alert clicks still open any conversation.
 Focus is the first caller and registers its restriction only while Focus is on.
 
+### Decorating host sidebar rows and adding sort modes
+
+`ctx.reflect.get("sidebarRows")` is an optional version-1 capability for host
+Team channel and direct-message rows, including rows moved into custom groups.
+Solo conversations are not supported yet. Use the reflective lookup rather than
+required `inject` so the plugin still activates on older hosts.
+
+```tsx
+ctx.reflect.get("sidebarRows")?.register({
+  version: 1,
+  id: "row-details",
+  render(row, Default) {
+    return row.id === "chosen-channel-id"
+      ? <div title="Tracked by this plugin">{Default}</div>
+      : Default;
+  },
+});
+```
+
+`row` contains `id`, `kind` (`team` or `dm`), `label`, `sectionKey`, the current
+`channel` summary (including available labels, visibility and activity data), and
+its current `unread` snapshot. Unknown unread counts remain `null`; activity
+fields retain their existing units and unknown values. This is the host's
+currently authorized roster, not a channel discovery API.
+
+`Default` is a React element, not a component constructor: return it, wrap it,
+or return a replacement element. Returning `null` intentionally hides the row;
+the host skips hidden rows when choosing a neighbor after leaving or deleting
+the current conversation.
+Render callbacks must be pure; return a component element if it needs hooks.
+The live host element keeps selection, unread badges, keyboard focus, menus and
+channel dragging without copying their implementation. Replacements and wrappers
+that discard or interfere with that element own the interactions they remove.
+Keep the wrapper shape stable across live row updates; moving `Default` to a
+different tree position remounts it and can discard focus or open menus.
+
+Active contributions compose in lexical plugin-id/contribution-id order, with
+later callbacks receiving the preceding result (possibly `null`). Callback
+throws, invalid return values, and descendant render failures restore the
+original host element for that row only, not a partially decorated result.
+Repeated callback and invalid-result fallbacks retain the host row across live
+updates. Switching between a decoration and fallback, or recovering from a
+descendant error, can remount it and reset an open menu. If the host button had
+focus, the host restores it to the same channel's replacement button anywhere in
+the sidebar, including after a section move, only when the update leaves focus
+on the document body; it never overrides focus moved elsewhere.
+If the row is hidden instead, focus moves to a surviving neighbor in the same
+section, or its heading when no row remains.
+Disabling, replacing or disposing a plugin removes its contributions through its
+Cordis scope. With no active render contribution, the existing host row renders
+without an extra DOM wrapper.
+
+```ts
+ctx.reflect.get("sidebarRows")?.register({
+  version: 1,
+  id: "activity-order",
+  sortModes: [{
+    id: "oldest",
+    label: "Oldest activity first",
+    compare: (a, b) =>
+      (a.channel.lastActivityAt ?? 0) -
+      (b.channel.lastActivityAt ?? 0) || a.id.localeCompare(b.id),
+  }],
+});
+```
+
+Modes appear beside A–Z and Recent in each Team section's existing Sort menu.
+Their persisted values are `plugin:<plugin-id>/<contribution-id>/<mode-id>`;
+ids use lowercase ASCII letters, digits, dots, underscores and hyphens, starting
+with a letter or digit, with a combined value limit of 512 characters. A registration
+with invalid fields or incompatible sort ids is rejected as a whole, including
+its renderer; register render-only contributions separately if needed. Sorting
+only rearranges existing rows. Comparators must be pure and return finite
+numbers; ties preserve host order. A throw or non-finite result restores the
+section's host order. Live unread and channel updates recompute custom sorting.
+Selecting a plugin mode loads the same channel activity history as Recent,
+sharing its request lifetime and cancellation. Activity fields remain unknown
+until that read completes; comparators must handle unknown values.
+If a saved mode is unavailable, the section uses A–Z while retaining the saved
+choice for re-enabling the plugin. Cold sidebar startup includes a saved mode's
+registration in its existing 1.5-second reveal budget; built-in sorts and modes
+already registered do not wait for other plugins. Plugin choices use a separate `pluginSort`
+extension in the existing sort record, leaving built-in fields readable by older
+hosts. For example, the relevant register fields for one section are:
+
+```json
+{
+  "meta": { "v": 1, "g": { "channels": [1, "0123456789abcdef", "alpha"] } },
+  "pluginSort": {
+    "v": 1,
+    "g": { "channels": [1, "0123456789abcdef", "plugin:example/activity-order/oldest"] }
+  }
+}
+```
+
+Each tuple is `[clock, writer, value]`: a nonnegative safe-integer clock and a
+16-character lowercase hexadecimal writer id. A plugin choice applies only when
+its section's `meta.g` register has the same clock and writer and an `alpha`
+value (`null` is also accepted for legacy bindings). Plugin writers use `alpha`
+as the anchor; built-in A–Z writers must instead write the `null` reset with a
+new stamp, and Recent writes `recent`, so either edit supersedes the binding.
+Plugin-aware writers remove that section's extension choice on a built-in edit,
+prune missing or mismatched anchors, and preserve valid choices for other sections.
+The extension has its own 104-entry limit, separate from the 104 projected
+built-in sort groups. Writers must retain the extension when editing other
+sections. There is no automatic reorder-without-menu hook and no insertion hook
+in this version; use `sidebarSections` for new rows.
+
 A plugin exports `inject` and `apply(ctx)`. Pages register with
 `ctx.pages.register({ id, title, layout?, companion?, primary?, placement?, icon?, component, sidebar? })`. Panels register with
 `ctx.panels.register({ id, title, matches, order?, launcher?, toolbar?, component })`. An optional `toolbar` supplies live controls beside shell search in place of the static launcher. Its lifetime stays with its plugin, and shell render failures are isolated. Huddles is the first caller. IDs are local to the

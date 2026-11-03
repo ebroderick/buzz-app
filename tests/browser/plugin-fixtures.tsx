@@ -164,6 +164,37 @@ export const fixturePlugins: readonly BundledPlugin[] = [
   },
   {
     manifest: {
+      id: "fixture.sidebar-rows",
+      name: "Host row fixture",
+      apiVersion: 1,
+    },
+    enabledByDefault: false,
+    module: {
+      apply(ctx) {
+        ctx.reflect.get("sidebarRows")?.register({
+          version: 1,
+          id: "rows",
+          render: (row, Default) =>
+            row.id === "beta" ? (
+              <div data-plugin-row="decorated" title="Tracked by this plugin">
+                {Default}
+              </div>
+            ) : (
+              Default
+            ),
+          sortModes: [
+            {
+              id: "reverse",
+              label: "Reverse name",
+              compare: (a, b) => b.label.localeCompare(a.label),
+            },
+          ],
+        });
+      },
+    },
+  },
+  {
+    manifest: {
       id: "fixture.sidebar-sections",
       name: "Sidebar section fixture",
       apiVersion: 1,

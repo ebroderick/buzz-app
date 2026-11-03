@@ -955,6 +955,28 @@ it.each([
   },
 );
 
+it.each(["channels", "section:work"])(
+  "confirms native plugin sort choices for %s through encrypted readback",
+  async (group) => {
+    const transport = await connectNativeTransport(community);
+    await transport.writeSidebarSort?.("forums", "recent", [], signal);
+    for (const mode of [
+      "plugin:example.plugin/rows/reverse",
+      "plugin:example.plugin/rows/other",
+      "recent",
+      "alpha",
+    ] as const) {
+      await expect(
+        transport.writeSidebarSort?.(group, mode, ["work"], signal),
+      ).resolves.toEqual(
+        mode === "alpha"
+          ? { forums: "recent" }
+          : { forums: "recent", [group]: mode },
+      );
+    }
+  },
+);
+
 it("uses the native filter signer and confirmed writer without changing sort", async () => {
   const transport = await connectNativeTransport(community);
   await transport.writeSidebarSort?.("channels", "recent", [], signal);

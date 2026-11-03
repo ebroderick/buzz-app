@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { useSidebarView } from "../../src/bundled/channels/useSidebarView";
+import { ChannelSidebarRow } from "../../src/bundled/channels/ChannelSidebarRow";
+import { SidebarSection } from "../../src/bundled/channels/SidebarSection";
 import { SidebarContributionSection } from "../../src/features/channel-navigation/SidebarContributionSection";
 import { ChannelSidebarDnd } from "../../src/features/channel-navigation/ChannelSidebarDnd";
 import type { Navigation } from "../../src/features/navigation/controller";
@@ -14,7 +16,12 @@ import type {
 // The real sidebar view hook over a plain list with real layout. The page
 // controls when the hook is mounted, where it navigates, and when the
 // current entry renders, as a roster or an exact lookup would.
-type State = { mounted: boolean; at: string; rows: number[] };
+type State = {
+  mounted: boolean;
+  at: string;
+  rows: number[];
+  relocated?: boolean;
+};
 const rows = (count: number) => Array.from({ length: count }, (_, i) => i);
 const contributionTarget: OpenTarget = {
   version: 1,
@@ -122,6 +129,38 @@ function Harness() {
       for (const listener of contributionListeners) listener();
     },
   };
+  if (state.relocated !== undefined)
+    return (
+      <nav aria-label="Sidebar">
+        {["channels", "starred"].map((section) => (
+          <SidebarSection
+            key={section}
+            sectionKey={section}
+            title={section === "channels" ? "Channels" : "Starred"}
+            open={section === "channels"}
+            onToggle={() => {}}
+            hideMoreActions
+          >
+            {(section === "channels"
+              ? state.relocated
+                ? ["alpha", "gamma"]
+                : ["alpha", "beta", "gamma"]
+              : state.relocated
+                ? ["beta"]
+                : []
+            ).map((id) => (
+              <ChannelSidebarRow
+                key={id}
+                channel={{ id, name: id, channelType: "stream" }}
+                icon={null}
+                onSelect={() => {}}
+                onPrepare={() => {}}
+              />
+            ))}
+          </SidebarSection>
+        ))}
+      </nav>
+    );
   return state.mounted ? <Sidebar at={state.at} rows={state.rows} /> : null;
 }
 

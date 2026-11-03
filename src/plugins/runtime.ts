@@ -109,6 +109,8 @@ export class PluginRuntime {
       this.update(entry, "starting", null);
       void this.start(entry);
     }
+    // Configuration can settle without changing the desired activations.
+    this.publish();
   }
 
   private update(

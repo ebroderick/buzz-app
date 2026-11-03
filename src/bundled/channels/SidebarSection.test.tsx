@@ -114,8 +114,10 @@ function Section({
   sort,
 }: {
   sort?: {
-    value: "alpha" | "recent";
-    change: (value: "alpha" | "recent") => void;
+    value: import("../../features/relay/sidebar-sort").SidebarSortMode;
+    change: (
+      value: import("../../features/relay/sidebar-sort").SidebarSortMode,
+    ) => void;
   };
 } = {}) {
   const [open, setOpen] = useState(true);

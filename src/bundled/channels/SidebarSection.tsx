@@ -45,6 +45,7 @@ import { Button } from "../../shared/design-system/ui/Button";
 import { Dialog } from "../../shared/design-system/ui/Dialog";
 import type { RelaySession } from "../../features/relay/session";
 import type { ChannelSummary } from "../../features/relay/contracts";
+import type { SidebarSortMode } from "../../features/relay/sidebar-sort";
 import type { SidebarFilter } from "./useSidebarFilters";
 import { SidebarGroupIcon } from "./SidebarGroupIcon";
 import { SidebarStarIcon } from "./SidebarStarIcon";
@@ -106,8 +107,9 @@ export function SidebarSection({
     | undefined;
   sort?:
     | {
-        value: "alpha" | "recent";
-        change: (mode: "alpha" | "recent") => void;
+        value: SidebarSortMode;
+        modes?: readonly { id: SidebarSortMode; label: string }[];
+        change: (mode: SidebarSortMode) => void;
       }
     | undefined;
   filter?:
@@ -374,7 +376,7 @@ export function SidebarSection({
                     <MenuRadioGroup
                       value={sort.value}
                       onValueChange={(mode) => {
-                        sort.change(mode as "alpha" | "recent");
+                        sort.change(mode as SidebarSortMode);
                         setMenuOpen(false);
                       }}
                     >
@@ -390,6 +392,16 @@ export function SidebarSection({
                         </MenuIcon>
                         A–Z
                       </MenuRadioItem>
+                      {sort.modes?.map((mode) => (
+                        <MenuRadioItem
+                          key={mode.id}
+                          closeOnClick={false}
+                          value={mode.id}
+                        >
+                          <MenuIcon>{null}</MenuIcon>
+                          {mode.label}
+                        </MenuRadioItem>
+                      ))}
                     </MenuRadioGroup>
                   </MenuSubmenuPopup>
                 </MenuSubmenu>
