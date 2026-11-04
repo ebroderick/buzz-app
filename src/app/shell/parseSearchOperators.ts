@@ -222,8 +222,10 @@ export function searchTextSyntax(text: string) {
         negateNext = false;
         continue;
       }
-      // Postgres skips punctuation after `-`, so `-@staging` excludes too.
-      const negated = negateNext || word.startsWith("-");
+      // Each leading `-` negates once, as in Postgres: `-@staging` excludes,
+      // `--help` is two negations, so it is still searched for.
+      const minuses = (word.match(/^-*/)?.[0].length ?? 0) + Number(negateNext);
+      const negated = minuses % 2 === 1;
       negateNext = false;
       if (negated) fullText = true;
       terms.push({ negated, or: !negated && word.toLowerCase() === "or" });

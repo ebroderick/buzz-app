@@ -7041,6 +7041,35 @@ it("keeps an author operator typed inside an open quote as phrase text", async (
   }
 });
 
+it("searches a double-hyphen command flag rather than refusing it as an exclusion", async () => {
+  const relay = keypair(),
+    viewer = keypair();
+  const { owner, reads } = operatorSession(
+    viewer,
+    relay,
+    [metadata(relay, "crew", "crew"), roster(relay, "crew", [viewer.pubkey])],
+    [message(viewer, "crew", "run it with --help", 1700000001)],
+  );
+  try {
+    render(
+      <SearchResults
+        session={owner.session}
+        query="--help"
+        {...operatorProps}
+      />,
+    );
+    expect(
+      await screen.findByRole("option", { name: /run it with --help/ }),
+    ).toBeVisible();
+    expect(reads.flat().filter((filter) => filter.kinds?.includes(9))).toEqual([
+      expect.objectContaining({ search: "--help", search_mode: "prefix" }),
+    ]);
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
 it("asks for a search word when the text only excludes", async () => {
   vi.useFakeTimers();
   const relay = keypair(),

@@ -213,6 +213,28 @@
       "positive": false
     },
     {
+      "name": "double_minus_command_flag_is_searched",
+      "query": "--help",
+      "text": "--help",
+      "from": null,
+      "in": null,
+      "since": null,
+      "until": null,
+      "fullText": false,
+      "positive": true
+    },
+    {
+      "name": "double_minus_flag_beside_text_is_searched",
+      "query": "deploy --dry-run",
+      "text": "deploy --dry-run",
+      "from": null,
+      "in": null,
+      "since": null,
+      "until": null,
+      "fullText": false,
+      "positive": true
+    },
+    {
       "name": "unclosed_quote_stays_typeahead",
       "query": "\"rollback pla",
       "text": "\"rollback pla",
