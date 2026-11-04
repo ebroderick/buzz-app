@@ -235,6 +235,28 @@
       "positive": true
     },
     {
+      "name": "triple_minus_excludes",
+      "query": "deploy ---staging",
+      "text": "deploy ---staging",
+      "from": null,
+      "in": null,
+      "since": null,
+      "until": null,
+      "fullText": true,
+      "positive": true
+    },
+    {
+      "name": "lone_minus_before_double_minus_excludes",
+      "query": "deploy - --staging",
+      "text": "deploy - --staging",
+      "from": null,
+      "in": null,
+      "since": null,
+      "until": null,
+      "fullText": true,
+      "positive": true
+    },
+    {
       "name": "unclosed_quote_stays_typeahead",
       "query": "\"rollback pla",
       "text": "\"rollback pla",
