@@ -18,7 +18,7 @@ import { IconButton } from "../shared/design-system/ui/IconButton";
 import { Button } from "../shared/design-system/ui/Button";
 import { relativeTimestamp } from "../shared/relative-timestamp";
 import { CHANNEL_ACTIVITY_KINDS } from "../features/relay/channel-activity";
-import type { RelayData } from "../features/relay/service";
+import type { RelaySession } from "../features/relay/session";
 import { Tooltip } from "../shared/design-system/ui/Tooltip";
 import { ToastNotice } from "../shared/design-system/ui/Toast";
 import { CopyIcon } from "../shared/design-system/icons";
@@ -79,17 +79,15 @@ function BackupRow({
 
 /**
  * When `pubkey` was last active in a channel on the current community's relay,
- * in Unix seconds; undefined without any activity there. Throws while the relay
- * isn't connected, so that reads as unchecked rather than inactive.
+ * in Unix seconds; undefined without any activity there. Throws without a
+ * connected session, so that reads as unchecked rather than inactive.
  */
 export async function keyActivity(
-  relay: Pick<RelayData, "snapshot">,
+  session: Pick<RelaySession, "read"> | undefined,
   pubkey: string,
 ): Promise<number | undefined> {
-  const connection = relay.snapshot();
-  if (connection.status !== "ready")
-    throw new Error(`Relay is ${connection.status}`);
-  const [latest] = await connection.session.read(
+  if (!session) throw new Error("The relay isn’t connected");
+  const [latest] = await session.read(
     // Relay reads must name kinds: channel activity, the messages people see.
     [{ kinds: [...CHANNEL_ACTIVITY_KINDS], authors: [pubkey], limit: 1 }],
     { priority: "background" },
@@ -127,13 +125,15 @@ function BackedUpKey({
     session.status === "signed-in" && session.authority
       ? session.revision
       : undefined;
+  // A backup finishing after the read may have just added the linked key.
+  const backedUp =
+    useSyncExternalStore(identity.backup.subscribe, identity.backup.snapshot)
+      ?.status === "complete";
   const [read, setRead] = useState<BackedUp>();
-  // undefined: checking; null: no events there; false: the read failed.
-  const [active, setActive] = useState<number | null | false>();
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a finished backup reads the account again.
   useEffect(() => {
     if (!revision) return;
     let current = true;
-    setActive(undefined);
     const account = federatedBuilderlabAccount(
       { value: revision },
       federated,
@@ -147,16 +147,6 @@ function BackedUpKey({
             ? linked
             : null;
         setRead({ revision, key });
-        if (key)
-          void lastActive?.(key).then(
-            (at) => {
-              if (current) setActive(at ?? null);
-            },
-            (error: unknown) => {
-              console.warn("Couldn’t read the backed-up key’s activity", error);
-              if (current) setActive(false);
-            },
-          );
       },
       (error: unknown) => {
         if (current)
@@ -169,8 +159,28 @@ function BackedUpKey({
     return () => {
       current = false;
     };
-  }, [revision, federated, identity, lastActive]);
+  }, [revision, federated, identity, backedUp]);
   const shown = read?.revision === revision ? read : undefined;
+  const key = shown && "key" in shown ? shown.key : null;
+  // undefined: checking; null: no events there; false: the read failed.
+  const [active, setActive] = useState<number | null | false>();
+  useEffect(() => {
+    if (!key || !lastActive) return;
+    let current = true;
+    setActive(undefined);
+    lastActive(key).then(
+      (at) => {
+        if (current) setActive(at ?? null);
+      },
+      (error: unknown) => {
+        console.warn("Couldn’t read the backed-up key’s activity", error);
+        if (current) setActive(false);
+      },
+    );
+    return () => {
+      current = false;
+    };
+  }, [key, lastActive]);
   if (!revision)
     return (
       <PreferenceRow

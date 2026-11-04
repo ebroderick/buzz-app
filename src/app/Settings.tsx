@@ -1206,9 +1206,15 @@ export function Settings({
       </PluginListEntry>
     );
   };
+  // A new connection's session reads activity again.
+  const relay = useSyncExternalStore(
+    communities.relay.subscribe,
+    communities.relay.snapshot,
+  );
+  const relaySession = relay.status === "ready" ? relay.session : undefined;
   const lastActive = useCallback(
-    (pubkey: string) => keyActivity(communities.relay, pubkey),
-    [communities.relay],
+    (pubkey: string) => keyActivity(relaySession, pubkey),
+    [relaySession],
   );
   const authorizePluginGit = async (repository: string) => {
     const connection = communities.relay.snapshot();

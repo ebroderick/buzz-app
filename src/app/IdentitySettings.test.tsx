@@ -444,10 +444,8 @@ it.each([
   "reads a key's last activity from a relay with %s",
   async (_label, events, activity) => {
     const read = vi.fn(async () => events);
-    const relay = {
-      snapshot: () => ({ status: "ready", session: { read } }),
-    } as unknown as Parameters<typeof keyActivity>[0];
-    await expect(keyActivity(relay, viewer)).resolves.toEqual(activity);
+    const session = { read } as unknown as Parameters<typeof keyActivity>[0];
+    await expect(keyActivity(session, viewer)).resolves.toEqual(activity);
     expect(read).toHaveBeenCalledWith(
       [{ kinds: [...CHANNEL_ACTIVITY_KINDS], authors: [viewer], limit: 1 }],
       { priority: "background" },
@@ -456,10 +454,77 @@ it.each([
 );
 
 it("reports a relay that isn't connected as an unchecked read, not as no activity", async () => {
-  const relay = {
-    snapshot: () => ({ status: "connecting" }),
-  } as unknown as Parameters<typeof keyActivity>[0];
-  await expect(keyActivity(relay, viewer)).rejects.toThrow(
-    "Relay is connecting",
+  await expect(keyActivity(undefined, viewer)).rejects.toThrow(
+    "The relay isn’t connected",
   );
+});
+
+it("shows the linked key once a backup that finishes after the read adds it", async () => {
+  vi.stubEnv("VITE_BUZZ_BUILDERLAB_URL", "https://builderlab.example");
+  const host = backupHost(at(1, { status: "running" }));
+  const fi = federatedFixture();
+  fi.publish({ status: "signed-in", email: "a@example.com" });
+  let backups: string[] = [];
+  fi.request.mockImplementation(async ({ path }) => ({
+    status: 200,
+    headers: {},
+    body: JSON.stringify(
+      path.endsWith("/nostr-identities/current")
+        ? { identity: { pubkey_hex: viewer } }
+        : { current_nostr_pubkey: viewer, backup_nostr_pubkeys: backups },
+    ),
+  }));
+  render(
+    <IdentitySettings
+      viewer={viewer}
+      identity={host.identity}
+      builderlabIdentity={fi.service}
+    />,
+    { wrapper: ToastProvider },
+  );
+  await waitFor(() => expect(fi.request).toHaveBeenCalledTimes(2));
+  await act(async () => {});
+  expect(screen.queryByText(/^Backed-up key/)).toBeNull();
+  backups = [viewer];
+  host.push(at(2, { status: "complete" }));
+  await waitFor(() => expect(fi.request).toHaveBeenCalledTimes(4));
+  expect(
+    await screen.findByText("Backed-up key · This device · Linked"),
+  ).toBeVisible();
+});
+
+it("reads activity again when the relay connection changes", async () => {
+  vi.stubEnv("VITE_BUZZ_BUILDERLAB_URL", "https://builderlab.example");
+  const host = backupHost(at(1, { status: "complete" }));
+  const fi = federatedFixture();
+  fi.publish({ status: "signed-in", email: "a@example.com" });
+  fi.request.mockImplementation(async ({ path }) => ({
+    status: 200,
+    headers: {},
+    body: JSON.stringify(
+      path.endsWith("/nostr-identities/current")
+        ? { identity: { pubkey_hex: viewer } }
+        : { current_nostr_pubkey: viewer, backup_nostr_pubkeys: [viewer] },
+    ),
+  }));
+  const settings = (lastActive: (pubkey: string) => Promise<number>) => (
+    <IdentitySettings
+      viewer={viewer}
+      identity={host.identity}
+      builderlabIdentity={fi.service}
+      lastActive={lastActive}
+    />
+  );
+  const { rerender } = render(
+    settings(async () => {
+      throw new Error("The relay isn’t connected");
+    }),
+    { wrapper: ToastProvider },
+  );
+  expect(await screen.findByText(/Couldn’t check activity$/)).toBeVisible();
+  // Settings hands over a new reader when the connection becomes ready.
+  rerender(settings(async () => Date.now() / 1000 - 7200));
+  expect(await screen.findByText(/Last active 2 hours ago$/)).toBeVisible();
+  // The account isn't read again for it.
+  expect(fi.request).toHaveBeenCalledTimes(2);
 });

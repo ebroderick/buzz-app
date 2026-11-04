@@ -123,12 +123,16 @@ const communityState = {
   selected: "primary",
   sync: { known: [], outbox: [] },
 };
+const disconnected = { status: "disconnected" };
+const connecting = { status: "connecting" };
+const relay = { subscribe: () => () => {}, snapshot: () => disconnected };
 const host = {
   plugins: { subscribe: () => () => {}, snapshot: () => pluginState },
   communities: {
     retainPresentation: () => () => {},
     subscribe: () => () => {},
     snapshot: () => communityState,
+    relay,
   },
 } as unknown as Parameters<typeof Settings>[0];
 
@@ -1151,6 +1155,7 @@ it("keeps grouped cards available without a selected community", () => {
           retainPresentation: () => () => {},
           subscribe: () => () => {},
           snapshot: () => noCommunityState,
+          relay,
         } as unknown as Parameters<typeof Settings>[0]["communities"]
       }
       cards={cards}
@@ -1193,6 +1198,7 @@ it("shows administration only within a selected community", () => {
     retainPresentation: () => () => {},
     subscribe: () => () => {},
     snapshot: () => noCommunityState,
+    relay,
   } as unknown as Parameters<typeof Settings>[0]["communities"];
   view.rerender(<Settings {...host} communities={noCommunity} cards={cards} />);
   expect(nav).not.toHaveTextContent("Community admin");
@@ -2267,7 +2273,7 @@ it("recommends managed plugins in Settings and points to them from navigation", 
   const fixture = reviewPluginFixture({
     communities: {
       ...host.communities,
-      relay: { snapshot: () => ({ status: "connecting" }) },
+      relay: { subscribe: () => () => {}, snapshot: () => connecting },
     } as never,
   });
   Object.assign(fixture.manager, {
@@ -2371,7 +2377,7 @@ it("routes a managed plugin's updates through the managed review instead of the 
   const fixture = reviewPluginFixture({
     communities: {
       ...host.communities,
-      relay: { snapshot: () => ({ status: "connecting" }) },
+      relay: { subscribe: () => () => {}, snapshot: () => connecting },
     } as never,
   });
   const external = fixture.snapshot.configuration.catalog.plugins[1];
