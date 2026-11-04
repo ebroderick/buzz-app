@@ -6844,10 +6844,7 @@ it("waits for the exact in: lookup before trusting one cached open namesake", as
   const held = new Promise<void>((resolve) => {
     release = resolve;
   });
-  let lookupStarted!: () => void;
-  const started = new Promise<void>((resolve) => {
-    lookupStarted = resolve;
-  });
+  let lookups = 0;
   try {
     owner.session.channels.ensureList();
     await waitFor(() =>
@@ -6862,12 +6859,13 @@ it("waits for the exact in: lookup before trusting one cached open namesake", as
         ...owner.session.channels,
         matchPublic: () => channels.slice(0, 1),
         searchPublic: async (...args: Parameters<typeof searchPublic>) => {
-          lookupStarted();
+          if (args[1]?.exact) lookups++;
           await held;
           return searchPublic(...args);
         },
       },
     };
+    vi.useFakeTimers();
     render(
       <SearchResults
         session={session}
@@ -6875,20 +6873,22 @@ it("waits for the exact in: lookup before trusting one cached open namesake", as
         {...operatorProps}
       />,
     );
-    await started;
-    await act(
-      () =>
-        new Promise((resolve) => setTimeout(resolve, SEARCH_DEBOUNCE_MS * 2)),
-    );
+    // Past both debounces: a resolved channel would have started a read.
+    await act(async () => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS * 2));
+    expect(lookups).toBe(1);
     expect(reads).toEqual([]);
-    await act(async () => release());
+    await act(async () => {
+      release();
+      await vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS * 2);
+    });
     expect(
-      await screen.findByText(
+      screen.getByText(
         "More than one conversation is named “team”. Search in that conversation instead.",
       ),
     ).toBeVisible();
     expect(reads).toEqual([]);
   } finally {
+    release();
     cleanup();
     owner.dispose();
   }
