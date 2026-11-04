@@ -61,7 +61,13 @@ export type SearchInputProps = {
   /** A control that refines the scoped results, beside the scope chip. */
   scopeAction?: ReactNode;
   authorChip?:
-    | { label: string; title: string; onRemove: () => void }
+    | {
+        /** `in:@person` shares the chip with `from:@author`. */
+        operator: "from" | "in";
+        label: string;
+        title: string;
+        onRemove: () => void;
+      }
     | undefined;
   displayQuery?: string | undefined;
   onDisplayQueryChange?: ((value: string) => void) | undefined;
@@ -404,11 +410,12 @@ export function SearchChoices({
               <button
                 type="button"
                 className="search-palette-author-chip"
-                aria-label={`Remove author ${authorChip.label}`}
+                aria-label={`Remove ${authorChip.operator === "in" ? "conversation with" : "author"} ${authorChip.label}`}
                 title={authorChip.title}
                 onClick={authorChip.onRemove}
               >
-                <span aria-hidden="true">×</span> from:@{authorChip.label}
+                <span aria-hidden="true">×</span> {authorChip.operator}:@
+                {authorChip.label}
               </button>
             </span>
           ) : undefined

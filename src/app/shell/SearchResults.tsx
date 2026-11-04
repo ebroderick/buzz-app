@@ -30,6 +30,7 @@ import {
   ChatCircleIcon,
 } from "../../shared/design-system/icons/index";
 import { Button } from "../../shared/design-system/ui/Button";
+import { Calendar } from "../../shared/design-system/ui/Calendar";
 import { IconButton } from "../../shared/design-system/ui/IconButton";
 import {
   MenuPopup,
@@ -183,9 +184,10 @@ export function SearchResults({
   const resolveName = useIdentityNames(session.names);
   const list = useChannelList(session.channels);
   const parsed = useMemo(() => parseSearchOperators(query.trim()), [query]);
+  // `in:@` names a person too, so it shares the author picker.
   const authorPrompt = operatorMatches(
     query,
-    /(?:^|\s)from:(@?)([^\s]*)$/gi,
+    /(?:^|\s)(from:@?|in:@)([^\s]*)$/gi,
   ).at(-1);
   // `me` is the viewer, never a name to pick.
   const pickerPrompt =
@@ -226,11 +228,13 @@ export function SearchResults({
     (savedHidden.has(channel.id) || dmVisibility.hidden.includes(channel.id));
   const [selectedAuthor, setSelectedAuthor] = useState<{
     query: string;
+    /** `from:<key>` or `in:@<key>`, as the query holds it. */
+    operand: string;
     pubkey: string;
     name: string;
     index: number;
   }>();
-  const authorOperand = selectedAuthor ? `from:${selectedAuthor.pubkey}` : "";
+  const authorOperand = selectedAuthor?.operand ?? "";
   const selectedIndex = selectedAuthor?.index ?? -1;
   const showAuthorChip =
     !!selectedAuthor &&
@@ -242,7 +246,7 @@ export function SearchResults({
     : undefined;
   const updateDisplayQuery = (value: string) => {
     const nextQuery = showAuthorChip
-      ? `from:${selectedAuthor?.pubkey} ${value.trimStart()}`
+      ? `${authorOperand} ${value.trimStart()}`
       : value;
     setSelectedAuthor(
       showAuthorChip && selectedAuthor
@@ -257,7 +261,8 @@ export function SearchResults({
     setSelectedAuthor(undefined);
     input.current?.focus();
   };
-  const updateDateQuery = (nextQuery: string) => {
+  /** Replace the query, keeping the author chip on its operand. */
+  const replaceQuery = (nextQuery: string) => {
     if (showAuthorChip && selectedAuthor) {
       const index = nextQuery.indexOf(authorOperand);
       setSelectedAuthor(
@@ -274,42 +279,68 @@ export function SearchResults({
   // Completing either from:name or from:@name selects an exact signed key.
   const datePrompt = operatorMatches(
     query,
-    /(?:^|\s)(after|before):([^\s]*)$/gi,
+    /(?:^|\s)(after|before|on|during):([^\s]*)$/gi,
   ).at(-1);
   const showDateChoices =
     !!datePrompt && parseSearchOperators(datePrompt[0]).text !== "";
-  const datePresets = [
-    ["Today", 0],
-    ["Yesterday", 1],
-    ["This week", 2],
-    ["Last week", 3],
-    ["This month", 4],
-  ] as const;
-  const dateChoices: SearchDestination[] =
-    showDateChoices && datePrompt
-      ? datePresets.map(([label, kind]) => {
-          const day = new Date();
-          day.setHours(0, 0, 0, 0);
-          if (kind === 1) day.setDate(day.getDate() - 1);
-          if (kind === 2 || kind === 3) {
-            day.setDate(
-              day.getDate() - ((day.getDay() + 6) % 7) - (kind === 3 ? 7 : 0),
-            );
-          }
-          if (kind === 4) day.setDate(1);
-          const date = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`;
-          return {
-            key: `date:${kind}`,
-            label,
-            detail: date,
-            icon: CalendarIcon,
-            run: () =>
-              updateDateQuery(
-                `${query.slice(0, datePrompt.index)} ${datePrompt[1]}:${date} `.trimStart(),
-              ),
-          };
-        })
-      : [];
+  const dateOperator = showDateChoices ? datePrompt?.[1]?.toLowerCase() : "";
+  /** Replace the unfinished date token with a completed `operator:value`. */
+  const completeDate = (operand: string) =>
+    replaceQuery(
+      `${query.slice(0, datePrompt?.index ?? query.length)} ${operand} `.trimStart(),
+    );
+  const localDate = (day: Date) =>
+    `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`;
+  // `on:` picks a day from the calendar instead; `during:` names periods.
+  const datePresets =
+    dateOperator === "during"
+      ? ([
+          "Today",
+          "Yesterday",
+          "This week",
+          "This month",
+          "This year",
+        ] as const)
+      : dateOperator === "on"
+        ? []
+        : ([
+            "Today",
+            "Yesterday",
+            "This week",
+            "Last week",
+            "This month",
+          ] as const);
+  const dateChoices: SearchDestination[] = datePresets.map((label) => {
+    const day = new Date();
+    day.setHours(0, 0, 0, 0);
+    if (label === "Yesterday") day.setDate(day.getDate() - 1);
+    if (label === "This week" || label === "Last week")
+      day.setDate(
+        day.getDate() -
+          ((day.getDay() + 6) % 7) -
+          (label === "Last week" ? 7 : 0),
+      );
+    if (label === "This month") day.setDate(1);
+    const date = localDate(day);
+    // There is no week period, so `during:` this week starts after its Monday.
+    const operand =
+      dateOperator !== "during"
+        ? `${datePrompt?.[1]}:${date}`
+        : label === "This week"
+          ? `after:${date}`
+          : label === "This month"
+            ? `during:${date.slice(0, 7)}`
+            : label === "This year"
+              ? `during:${date.slice(0, 4)}`
+              : `during:${date}`;
+    return {
+      key: `date:${label}`,
+      label,
+      detail: operand.slice(operand.indexOf(":") + 1),
+      icon: CalendarIcon,
+      run: () => completeDate(operand),
+    };
+  });
   // Every keystroke renders; DM names only change with their inputs.
   const names = useMemo(
     () =>
@@ -394,6 +425,55 @@ export function SearchResults({
       ? inMatches[0]?.id
       : undefined;
   const operatorChannelAmbiguous = inMatches.length > 1;
+  // An unfinished `in:` or `in:#` names a channel to pick, as `from:` names a
+  // person.
+  const channelPrompt = operatorMatches(
+    query,
+    /(?:^|\s)in:(?!@)(#?)([^\s]*)$/gi,
+  ).at(-1);
+  const showChannelPicker =
+    !!channelPrompt && !isChannelUuid(channelPrompt[2] ?? "");
+  const channelNeedle = (channelPrompt?.[2] ?? "").toLowerCase();
+  const startsWithNeedle = (channel: ChannelSummary) =>
+    channel.name.toLowerCase().startsWith(channelNeedle);
+  const channelChoices: SearchDestination[] =
+    showChannelPicker && channelPrompt
+      ? channels
+          .filter(
+            (channel) =>
+              channel.channelType !== "dm" &&
+              channel.channelType !== "solo" &&
+              channel.name.toLowerCase().includes(channelNeedle),
+          )
+          .sort(
+            (a, b) =>
+              Number(startsWithNeedle(b)) - Number(startsWithNeedle(a)) ||
+              Number(!!a.archived) - Number(!!b.archived),
+          )
+          .slice(0, 12)
+          .map((channel) => {
+            // A namesake would leave the name ambiguous; the id is exact.
+            const value =
+              list.channels.filter(
+                (other) => !other.huddle && sameName(other.name, channel.name),
+              ).length > 1
+                ? channel.id
+                : `#${channel.name}`;
+            return {
+              key: `in:${channel.id}`,
+              label: channel.name,
+              detail: channel.archived ? "Archived channel" : "Channel",
+              icon: ChatCircleIcon,
+              run: () => {
+                const start =
+                  channelPrompt.index +
+                  (channelPrompt[0].match(/^\s*/)?.[0].length ?? 0);
+                replaceQuery(`${query.slice(0, start)}in:${value} `);
+                input.current?.focus();
+              },
+            };
+          })
+      : [];
   // The author picker also matches a selectable agent by its own name, so a
   // completed from: name resolves against the same names.
   const agentSnapshot = useSyncExternalStore(
@@ -436,14 +516,17 @@ export function SearchResults({
   // and `#` for a channel.
   const peopleText = parsed.text.trim();
   const peopleNeedle = peopleText.replace(/^@/, "");
+  const hasOperator =
+    parsed.from !== null ||
+    parsed.in !== null ||
+    parsed.since !== null ||
+    parsed.until !== null;
   const peopleActive =
     !scopedChannelId &&
-    parsed.from === null &&
-    parsed.in === null &&
-    parsed.since === null &&
-    parsed.until === null &&
+    !hasOperator &&
     !showAuthorPicker &&
     !showDateChoices &&
+    !showChannelPicker &&
     !!peopleNeedle &&
     !peopleText.startsWith("#");
   const personDirectory = usePersonDirectory(
@@ -606,9 +689,13 @@ export function SearchResults({
                 const promptEnd =
                   promptStart + authorToken[0].trimStart().length;
                 const prefix = visible.slice(0, promptStart);
-                const nextQuery = `${prefix}from:${pubkey}${visible.slice(promptEnd) || " "}`;
+                const operand = authorToken[0].trimStart().startsWith("in:")
+                  ? `in:@${pubkey}`
+                  : `from:${pubkey}`;
+                const nextQuery = `${prefix}${operand}${visible.slice(promptEnd) || " "}`;
                 setSelectedAuthor({
                   query: nextQuery,
+                  operand,
                   pubkey,
                   name: profile.name,
                   index: prefix.length,
@@ -621,7 +708,7 @@ export function SearchResults({
       : [];
   const publicChannels = usePublicChannelSearch(
     session,
-    scopedChannelId ? "" : parsed.text,
+    scopedChannelId || hasOperator ? "" : parsed.text,
     list.status === "ready",
   );
   // Scoped search passes no text, so the lookup is idle there.
@@ -1213,7 +1300,8 @@ export function SearchResults({
   const slowMessages = useDelayedSearch(messagesPending);
   // An author or date picker replaces the result groups, so it announces
   // none of their lookups.
-  const resultsShown = !showAuthorPicker && !showDateChoices;
+  const resultsShown =
+    !showAuthorPicker && !showDateChoices && !showChannelPicker;
   const searchAnnouncement = useSearchAnnouncement(
     resultsShown && slowChannels,
     slowPeople,
@@ -1279,9 +1367,17 @@ export function SearchResults({
             destinations: authorChoices.filter((choice) => choice.isAgent),
           },
         ]
-      : showDateChoices
-        ? [{ label: "Dates", destinations: dateChoices }]
-        : scopedChannelId
+      : showDateChoices || showChannelPicker
+        ? [
+            showDateChoices
+              ? { label: "Dates", destinations: dateChoices }
+              : {
+                  label: "Channels",
+                  destinations: channelChoices,
+                  empty: "No matching channels.",
+                },
+          ]
+        : scopedChannelId || hasOperator
           ? [
               {
                 label: messageOrder,
@@ -1427,6 +1523,9 @@ export function SearchResults({
       authorChip={
         showAuthorChip && selectedAuthor
           ? {
+              operator: selectedAuthor.operand.startsWith("in:")
+                ? ("in" as const)
+                : ("from" as const),
               label: selectedAuthor.name,
               title: npubEncode(selectedAuthor.pubkey),
               onRemove: removeSelectedAuthor,
@@ -1508,13 +1607,15 @@ export function SearchResults({
       }
       isAction={isSearchAction}
     >
-      {/* Guidance, not status: outside the live region so opening search
-          does not announce it. */}
-      {!query.trim() && (
-        <p className="px-3 pb-2 text-body-sm text-subtle">
-          Filter messages with from:me or from:@name, in:#channel or in:@person,
-          after:, before:, on: or during: a date, "exact phrase" and -word.
-        </p>
+      {dateOperator === "on" && (
+        <Calendar
+          mode="single"
+          aria-label="Choose a day"
+          onSelect={(day) => {
+            if (day) completeDate(`on:${localDate(day)}`);
+            input.current?.focus();
+          }}
+        />
       )}
       <div
         className="space-y-2 px-3 text-body-sm text-subtle"

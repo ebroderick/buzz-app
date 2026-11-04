@@ -4091,6 +4091,142 @@ it("shows only the requested date suggestions and inserts local calendar dates",
   }
 });
 
+it("offers during: periods and an on: calendar that insert local dates", async () => {
+  const relay = keypair(),
+    viewer = keypair();
+  const owner = createRelaySession(
+    scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+  );
+  const change = vi.fn();
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date(2026, 9, 7, 12));
+  try {
+    const props = {
+      session: owner.session,
+      onQueryChange: change,
+      input: createRef<HTMLInputElement>(),
+      pages: [],
+      openConversation: () => {},
+    };
+    const view = render(<SearchResults {...props} query="deploy during:" />);
+    const dates = within(screen.getByRole("group", { name: "Dates" }));
+    expect(
+      dates.getAllByRole("option").map((option) => option.textContent),
+    ).toEqual([
+      "Today2026-10-07",
+      "Yesterday2026-10-06",
+      "This week2026-10-05",
+      "This month2026-10",
+      "This year2026",
+    ]);
+    fireEvent.click(dates.getByRole("option", { name: /This week/ }));
+    // There is no week period, so the week starts after its Monday.
+    expect(change).toHaveBeenLastCalledWith("deploy after:2026-10-05 ");
+    fireEvent.click(dates.getByRole("option", { name: /This year/ }));
+    expect(change).toHaveBeenLastCalledWith("deploy during:2026 ");
+    view.rerender(<SearchResults {...props} query="deploy on:" />);
+    expect(screen.queryByRole("group", { name: "Dates" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /October 14th, 2026/ }));
+    expect(change).toHaveBeenLastCalledWith("deploy on:2026-10-14 ");
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it("picks an in: channel from the joined channels and an in:@ person like from:@", async () => {
+  const relay = keypair(),
+    viewer = keypair(),
+    baxen = keypair();
+  const { owner } = operatorSession(viewer, relay, [
+    metadata(relay, "bugs", "buzz-bugs"),
+    roster(relay, "bugs", [viewer.pubkey]),
+    metadata(relay, "builds", "builds"),
+    roster(relay, "builds", [viewer.pubkey]),
+    metadata(relay, "crew", "crew"),
+    roster(relay, "crew", [viewer.pubkey]),
+    profile(baxen, { display_name: "Baxen" }),
+  ]);
+  const session = {
+    ...owner.session,
+    searchProfiles: async () => [
+      eventDto(profile(baxen, { display_name: "Baxen" })),
+    ],
+  };
+  const change = vi.fn();
+  const props = {
+    session,
+    onQueryChange: change,
+    input: createRef<HTMLInputElement>(),
+    pages: [],
+    openConversation: () => {},
+  };
+  try {
+    const view = render(<SearchResults {...props} query="deploy in:#bu" />);
+    const channels = within(
+      await screen.findByRole("group", { name: "Channels" }),
+    );
+    await waitFor(() =>
+      expect(
+        channels.getAllByRole("option").map((option) => option.textContent),
+      ).toEqual(["builds" + "Channel", "buzz-bugs" + "Channel"]),
+    );
+    fireEvent.click(channels.getByRole("option", { name: /buzz-bugs/ }));
+    expect(change).toHaveBeenLastCalledWith("deploy in:#buzz-bugs ");
+    view.rerender(<SearchResults {...props} query="in:#" />);
+    expect(
+      await within(
+        await screen.findByRole("group", { name: "Channels" }),
+      ).findAllByRole("option"),
+    ).toHaveLength(3);
+    view.rerender(<SearchResults {...props} query="deploy in:@bax" />);
+    const people = within(await screen.findByRole("group", { name: "People" }));
+    fireEvent.click(await people.findByRole("option", { name: /Baxen/ }));
+    expect(change).toHaveBeenLastCalledWith(`deploy in:@${baxen.pubkey} `);
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it("shows only messages once text sits beside an operator", async () => {
+  const relay = keypair(),
+    viewer = keypair();
+  const { owner, reads } = operatorSession(
+    viewer,
+    relay,
+    [
+      metadata(relay, "bugs", "buzz-bugs"),
+      roster(relay, "bugs", [viewer.pubkey]),
+      metadata(relay, "kr", "kalvin-reviewers"),
+      roster(relay, "kr", [viewer.pubkey]),
+    ],
+    [message(viewer, "bugs", "kalvin found it", 1700000001)],
+  );
+  try {
+    render(
+      <SearchResults
+        session={owner.session}
+        query="in:#buzz-bugs kalvin"
+        {...operatorProps}
+      />,
+    );
+    expect(
+      await screen.findByRole("option", { name: /kalvin found it/ }),
+    ).toBeVisible();
+    expect(reads.flat()).toEqual([
+      expect.objectContaining({ "#h": ["bugs"], search: "kalvin" }),
+    ]);
+    expect(screen.queryByRole("group", { name: "Channels" })).toBeNull();
+    expect(
+      screen.queryByRole("option", { name: /kalvin-reviewers/ }),
+    ).toBeNull();
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
 it("never widens a search when a name or channel operator is unresolved", async () => {
   vi.useFakeTimers();
   const relay = keypair(),
@@ -4286,7 +4422,7 @@ it("resolves an exact public name beyond eight preceding substring matches and r
     render(
       <SearchResults
         session={session}
-        query="deploy in:#dev"
+        query="deploy in:#dev "
         onQueryChange={() => {}}
         input={createRef()}
         pages={[]}
@@ -4354,7 +4490,7 @@ it("keeps a pending in: lookup pending, then retries its failure and resumes sco
     render(
       <SearchResults
         session={owner.session}
-        query="deploy in:#dev"
+        query="deploy in:#dev "
         onQueryChange={() => {}}
         input={createRef()}
         pages={[]}
@@ -4414,7 +4550,7 @@ it("shows a pending in: channel lookup beside Most relevant", async () => {
     render(
       <SearchResults
         session={session}
-        query="deploy in:#dev"
+        query="deploy in:#dev "
         onQueryChange={() => {}}
         input={createRef()}
         pages={[]}
@@ -4473,7 +4609,7 @@ it("holds an early Enter while an in: channel is still being found", async () =>
     render(
       <SearchResults
         session={owner.session}
-        query="deploy in:#dev"
+        query="deploy in:#dev "
         onQueryChange={() => {}}
         input={createRef()}
         pages={[]}
@@ -4589,7 +4725,7 @@ it("matches an in: operator against the rendered DM participant label", async ()
     render(
       <SearchResults
         session={owner.session}
-        query="deploy in:alice"
+        query="deploy in:alice "
         onQueryChange={() => {}}
         input={createRef()}
         pages={[]}
@@ -4630,7 +4766,7 @@ it("treats bare in:# as no channel operator", async () => {
     render(
       <SearchResults
         session={owner.session}
-        query="hello in:#"
+        query="hello in:# "
         onQueryChange={() => {}}
         input={createRef()}
         pages={[]}
@@ -6613,7 +6749,7 @@ const operatorProps = {
   openConversation: () => {},
 };
 
-it.each(["from:me", "deploy from:@ME in:#crew"])(
+it.each(["from:me", "deploy from:@ME in:#crew "])(
   "searches the viewer's own messages for %s without a people lookup",
   async (query) => {
     const relay = keypair(),
@@ -6673,7 +6809,7 @@ it("resolves in:@person to the viewer's direct message with them", async () => {
     render(
       <SearchResults
         session={owner.session}
-        query="deploy in:@alice"
+        query="deploy in:@alice "
         {...operatorProps}
       />,
     );
@@ -6714,7 +6850,7 @@ it("resolves in:@me to the viewer's self-DM", async () => {
     render(
       <SearchResults
         session={owner.session}
-        query="deploy in:@me"
+        query="deploy in:@me "
         {...operatorProps}
       />,
     );
@@ -6749,7 +6885,7 @@ it("prefers a live in: channel over an archived namesake", async () => {
     render(
       <SearchResults
         session={owner.session}
-        query="deploy in:#crew"
+        query="deploy in:#crew "
         {...operatorProps}
       />,
     );
@@ -6788,7 +6924,7 @@ it("prefers a live open in: channel over an archived joined namesake", async () 
     render(
       <SearchResults
         session={owner.session}
-        query="deploy in:#crew"
+        query="deploy in:#crew "
         {...operatorProps}
       />,
     );
@@ -6815,7 +6951,7 @@ it("refuses a joined in: channel with a live open namesake", async () => {
     render(
       <SearchResults
         session={owner.session}
-        query="deploy in:#crew"
+        query="deploy in:#crew "
         {...operatorProps}
       />,
     );
@@ -6869,7 +7005,7 @@ it("waits for the exact in: lookup before trusting one cached open namesake", as
     render(
       <SearchResults
         session={session}
-        query="deploy in:#team"
+        query="deploy in:#team "
         {...operatorProps}
       />,
     );
@@ -6896,10 +7032,10 @@ it("waits for the exact in: lookup before trusting one cached open namesake", as
 
 it.each([
   [
-    "deploy in:#crew",
+    "deploy in:#crew ",
     "More than one conversation is named “crew”. Search in that conversation instead.",
   ],
-  ["deploy in:@nobody", "No conversation named “@nobody”."],
+  ["deploy in:@nobody ", "No conversation named “@nobody”."],
 ])("explains an unresolved %s and does not search", async (query, text) => {
   vi.useFakeTimers();
   const relay = keypair(),
@@ -7082,7 +7218,7 @@ it("asks for a search word when the text only excludes", async () => {
     render(
       <SearchResults
         session={owner.session}
-        query="-staging in:#crew"
+        query="-staging in:#crew "
         {...operatorProps}
       />,
     );
@@ -7093,25 +7229,6 @@ it("asks for a search word when the text only excludes", async () => {
       ),
     ).toBeVisible();
     expect(reads).toEqual([]);
-  } finally {
-    cleanup();
-    owner.dispose();
-  }
-});
-
-it("lists the supported operators before anything is typed", async () => {
-  const relay = keypair(),
-    viewer = keypair();
-  const { owner } = operatorSession(viewer, relay, []);
-  try {
-    render(
-      <SearchResults session={owner.session} query="" {...operatorProps} />,
-    );
-    expect(
-      await screen.findByText(
-        'Filter messages with from:me or from:@name, in:#channel or in:@person, after:, before:, on: or during: a date, "exact phrase" and -word.',
-      ),
-    ).toBeVisible();
   } finally {
     cleanup();
     owner.dispose();
