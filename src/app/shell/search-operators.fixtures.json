@@ -191,6 +191,28 @@
       "positive": false
     },
     {
+      "name": "exclusion_starting_with_punctuation",
+      "query": "deploy -@staging -#prod",
+      "text": "deploy -@staging -#prod",
+      "from": null,
+      "in": null,
+      "since": null,
+      "until": null,
+      "fullText": true,
+      "positive": true
+    },
+    {
+      "name": "punctuation_exclusions_only",
+      "query": "-@staging -#prod",
+      "text": "-@staging -#prod",
+      "from": null,
+      "in": null,
+      "since": null,
+      "until": null,
+      "fullText": true,
+      "positive": false
+    },
+    {
       "name": "unclosed_quote_stays_typeahead",
       "query": "\"rollback pla",
       "text": "\"rollback pla",

@@ -222,11 +222,11 @@ export function searchTextSyntax(text: string) {
         negateNext = false;
         continue;
       }
-      const negated = negateNext || /^-[\p{L}\p{N}]/u.test(word);
+      // Postgres skips punctuation after `-`, so `-@staging` excludes too.
+      const negated = negateNext || word.startsWith("-");
       negateNext = false;
       if (negated) fullText = true;
-      if (negated || !word.startsWith("-"))
-        terms.push({ negated, or: !negated && word.toLowerCase() === "or" });
+      terms.push({ negated, or: !negated && word.toLowerCase() === "or" });
     }
   });
   const positive = terms.some(

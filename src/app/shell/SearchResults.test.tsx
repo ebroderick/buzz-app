@@ -2608,6 +2608,8 @@ it("translates combined operators into a single server-ranked scoped read and op
       />,
     );
     await act(async () => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
+    // The exact open-channel lookup settles before the in: channel resolves.
+    await act(async () => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
     const users = wire.next();
     expect(users.filters).toEqual([
       { kinds: [0], search: "alice", search_mode: "prefix", limit: 40 },
@@ -4687,6 +4689,8 @@ it.each([true, false])(
         />,
       );
       await act(async () => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
+      // The exact open-channel lookup settles before the in: channel resolves.
+      await act(async () => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
       const request = wire.next();
       expect(request.filters[0]?.authors).toEqual([signer.pubkey]);
       const hit = eventDto(
@@ -6753,6 +6757,137 @@ it("prefers a live in: channel over an archived namesake", async () => {
       await screen.findByRole("option", { name: /deploy live/ }),
     ).toBeVisible();
     expect(reads.flat()).toEqual([expect.objectContaining({ "#h": ["live"] })]);
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+const openChannel = [
+  ["public", ""],
+  ["t", "stream"],
+];
+
+it("prefers a live open in: channel over an archived joined namesake", async () => {
+  const relay = keypair(),
+    viewer = keypair();
+  const { owner, reads } = operatorSession(
+    viewer,
+    relay,
+    [
+      metadata(relay, "old", "crew", 1700000000, [
+        ["t", "stream"],
+        ["archived", "true"],
+      ]),
+      roster(relay, "old", [viewer.pubkey]),
+      metadata(relay, "open", "crew", 1700000000, openChannel),
+    ],
+    [message(viewer, "open", "deploy open", 1700000001)],
+  );
+  try {
+    render(
+      <SearchResults
+        session={owner.session}
+        query="deploy in:#crew"
+        {...operatorProps}
+      />,
+    );
+    await waitFor(() =>
+      expect(reads.flat()).toEqual([
+        expect.objectContaining({ "#h": ["open"] }),
+      ]),
+    );
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it("refuses a joined in: channel with a live open namesake", async () => {
+  const relay = keypair(),
+    viewer = keypair();
+  const { owner, reads } = operatorSession(viewer, relay, [
+    metadata(relay, "joined", "crew"),
+    roster(relay, "joined", [viewer.pubkey]),
+    metadata(relay, "open", "crew", 1700000000, openChannel),
+  ]);
+  try {
+    render(
+      <SearchResults
+        session={owner.session}
+        query="deploy in:#crew"
+        {...operatorProps}
+      />,
+    );
+    expect(
+      await screen.findByText(
+        "More than one conversation is named “crew”. Search in that conversation instead.",
+      ),
+    ).toBeVisible();
+    expect(reads).toEqual([]);
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it("waits for the exact in: lookup before trusting one cached open namesake", async () => {
+  const relay = keypair(),
+    viewer = keypair();
+  const { owner, reads } = operatorSession(viewer, relay, [
+    metadata(relay, "team-a", "team", 1700000000, openChannel),
+    metadata(relay, "team-b", "team", 1700000000, openChannel),
+  ]);
+  const searchPublic = owner.session.channels.searchPublic;
+  assert.exists(searchPublic);
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let lookupStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    lookupStarted = resolve;
+  });
+  try {
+    owner.session.channels.ensureList();
+    await waitFor(() =>
+      expect(owner.session.channels.list().status).toBe("ready"),
+    );
+    // Both namesakes are previewable, but the cache holds only the first.
+    const { channels } = await searchPublic("team", { exact: true });
+    expect(channels).toHaveLength(2);
+    const session = {
+      ...owner.session,
+      channels: {
+        ...owner.session.channels,
+        matchPublic: () => channels.slice(0, 1),
+        searchPublic: async (...args: Parameters<typeof searchPublic>) => {
+          lookupStarted();
+          await held;
+          return searchPublic(...args);
+        },
+      },
+    };
+    render(
+      <SearchResults
+        session={session}
+        query="deploy in:#team"
+        {...operatorProps}
+      />,
+    );
+    await started;
+    await act(
+      () =>
+        new Promise((resolve) => setTimeout(resolve, SEARCH_DEBOUNCE_MS * 2)),
+    );
+    expect(reads).toEqual([]);
+    await act(async () => release());
+    expect(
+      await screen.findByText(
+        "More than one conversation is named “team”. Search in that conversation instead.",
+      ),
+    ).toBeVisible();
+    expect(reads).toEqual([]);
   } finally {
     cleanup();
     owner.dispose();

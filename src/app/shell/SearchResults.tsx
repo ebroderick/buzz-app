@@ -359,33 +359,41 @@ export function SearchResults({
     !operatorChannel || isChannelUuid(operatorChannel)
       ? []
       : list.channels.filter(matchesInOperator);
-  // A live conversation outranks an archived namesake; live namesakes are
-  // ambiguous, so the search waits for a clearer name rather than guess.
-  const liveNamed = namedChannels.filter((channel) => !channel.archived);
-  const localMatches = liveNamed.length ? liveNamed : namedChannels;
-  const localChannel = localMatches.length === 1 ? localMatches[0] : undefined;
   const needsPublicLookup =
     !scopedChannelId &&
     !!operatorChannel &&
     operatorPerson === undefined &&
-    !isChannelUuid(operatorChannel) &&
-    !localMatches.length;
+    !isChannelUuid(operatorChannel);
   const operatorPublicChannels = usePublicChannelSearch(
     session,
     needsPublicLookup ? operatorChannel : "",
     list.status === "ready",
     true,
   );
-  const publicMatch =
-    operatorPublicChannels.channels.length === 1
-      ? operatorPublicChannels.channels[0]
-      : undefined;
+  const operatorLookupPending =
+    needsPublicLookup &&
+    (list.status !== "ready" || operatorPublicChannels.loading);
+  const operatorLookupError = needsPublicLookup
+    ? operatorPublicChannels.error
+    : undefined;
+  // Joined and open namesakes compete together. A live conversation outranks
+  // an archived namesake; live namesakes are ambiguous, so the search waits
+  // for a clearer name rather than guess. Cached rows shown while the exact
+  // lookup runs may miss a namesake, so only its settled answer resolves.
+  const namedCandidates = [
+    ...namedChannels,
+    ...operatorPublicChannels.channels.filter(
+      ({ id }) => !namedChannels.some((channel) => channel.id === id),
+    ),
+  ];
+  const liveNamed = namedCandidates.filter((channel) => !channel.archived);
+  const inMatches = liveNamed.length ? liveNamed : namedCandidates;
   const operatorChannelId = isChannelUuid(operatorChannel)
     ? operatorChannel
-    : (localChannel?.id ?? (needsPublicLookup ? publicMatch?.id : undefined));
-  const operatorChannelAmbiguous =
-    localMatches.length > 1 ||
-    (needsPublicLookup && operatorPublicChannels.channels.length > 1);
+    : !operatorLookupPending && !operatorLookupError && inMatches.length === 1
+      ? inMatches[0]?.id
+      : undefined;
+  const operatorChannelAmbiguous = inMatches.length > 1;
   // The author picker also matches a selectable agent by its own name, so a
   // completed from: name resolves against the same names.
   const agentSnapshot = useSyncExternalStore(
@@ -1200,12 +1208,6 @@ export function SearchResults({
         },
       ]
     : messages;
-  const operatorLookupPending =
-    needsPublicLookup &&
-    (list.status !== "ready" || operatorPublicChannels.loading);
-  const operatorLookupError = needsPublicLookup
-    ? operatorPublicChannels.error
-    : undefined;
   const directoryPending = publicChannels.loading || personDirectory.loading;
   const messagesPending = operatorLookupPending || search.loading;
   const slowMessages = useDelayedSearch(messagesPending);
