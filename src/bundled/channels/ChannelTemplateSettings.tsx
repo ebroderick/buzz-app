@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { useAgentsSnapshot, useTeams } from "../../features/agents/react";
 import type { Agent, Agents, Team } from "../../features/agents/service";
 import {
@@ -151,6 +151,28 @@ function TemplateDialog({
   );
   const [canvas, setCanvas] = useState(template?.canvas ?? "");
   const [error, setError] = useState("");
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
+  const keepEditing = useRef<HTMLButtonElement>(null);
+  const previousDiscard = useRef(confirmDiscard);
+  const input = useRef<HTMLInputElement>(null);
+  useLayoutEffect(() => {
+    if (confirmDiscard !== previousDiscard.current)
+      (confirmDiscard ? keepEditing.current : input.current)?.focus();
+    previousDiscard.current = confirmDiscard;
+  }, [confirmDiscard]);
+  // Compare the raw draft with the saved template as it is now (or empty
+  // fields for a new one), so a name of only spaces still counts and a box
+  // unchecked then checked again (which moves it to the end) does not.
+  const unsaved =
+    name !== (template?.name ?? "") ||
+    canvas !== (template?.canvas ?? "") ||
+    !sameSet(chosenAgents, template?.agents ?? []) ||
+    !sameSet(chosen, template?.teams ?? []);
+  const requestClose = () => {
+    if (confirmDiscard) setConfirmDiscard(false);
+    else if (unsaved) setConfirmDiscard(true);
+    else onClose();
+  };
   const act = (work: () => void) => {
     setError("");
     try {
@@ -164,116 +186,148 @@ function TemplateDialog({
     <Dialog
       open
       onOpenChange={(open) => {
-        if (!open) onClose();
+        if (!open) requestClose();
       }}
-      dismissOnOutsideClick={false}
-      title={template ? "Edit template" : "New template"}
-      closeLabel="Close template"
+      dismissOnOutsideClick
+      step={
+        confirmDiscard
+          ? { key: "discard", scale: 0.95 }
+          : { key: "edit", scale: 1.05 }
+      }
+      title={
+        confirmDiscard
+          ? "Discard changes?"
+          : template
+            ? "Edit template"
+            : "New template"
+      }
+      description={
+        confirmDiscard ? "Your template has unsaved changes." : undefined
+      }
+      closeLabel={confirmDiscard ? "Back to template" : "Close template"}
+      initialFocus={input}
       actions={
-        <>
-          {template && (
-            <Button
-              variant="destructive"
-              onClick={() => act(() => channelTemplates.remove(template.id))}
-            >
-              Delete
+        confirmDiscard ? (
+          <>
+            <Button ref={keepEditing} onClick={() => setConfirmDiscard(false)}>
+              Keep editing
             </Button>
-          )}
-          <Button
-            variant="prominent"
-            type="submit"
-            form="channel-template-form"
-            disabled={!name.trim()}
-          >
-            Save template
-          </Button>
-        </>
+            <Button variant="destructive" onClick={onClose}>
+              Discard changes
+            </Button>
+          </>
+        ) : (
+          <>
+            {template && (
+              <Button
+                variant="destructive"
+                onClick={() => act(() => channelTemplates.remove(template.id))}
+              >
+                Delete
+              </Button>
+            )}
+            <Button
+              variant="prominent"
+              type="submit"
+              form="channel-template-form"
+              disabled={!name.trim()}
+            >
+              Save template
+            </Button>
+          </>
+        )
       }
     >
-      <form
-        id="channel-template-form"
-        className={styles.stack}
-        onSubmit={(event) => {
-          event.preventDefault();
-          act(() =>
-            channelTemplates.save({
-              ...(template ? { id: template.id } : {}),
-              name,
-              teams: chosen,
-              agents: chosenAgents,
-              canvas,
-            }),
-          );
-        }}
-      >
-        <Field label="Name">
-          <Input
-            autoFocus
-            value={name}
-            onChange={(event) => setName(event.target.value)}
-          />
-        </Field>
-        <fieldset className={styles.teams}>
-          <legend className="text-label-sm">Agents</legend>
-          {agents.length ? (
-            agents.map((agent) => (
-              <Checkbox
-                key={agent.pubkey}
-                label={<AgentLabel agent={agent} />}
-                checked={chosenAgents.includes(agent.pubkey)}
-                onCheckedChange={(checked) =>
-                  setChosenAgents((last) =>
-                    checked
-                      ? [...last, agent.pubkey]
-                      : last.filter((pubkey) => pubkey !== agent.pubkey),
-                  )
-                }
-              />
-            ))
-          ) : (
-            <p className="m-0 text-body-sm text-secondary">No agents yet.</p>
-          )}
-        </fieldset>
-        <fieldset className={styles.teams}>
-          <legend className="text-label-sm">Teams</legend>
-          {teams.length ? (
-            teams.map((team) => (
-              <Checkbox
-                key={team.id}
-                label={team.name}
-                checked={chosen.includes(team.id)}
-                onCheckedChange={(checked) =>
-                  setChosen((last) =>
-                    checked
-                      ? [...last, team.id]
-                      : last.filter((id) => id !== team.id),
-                  )
-                }
-              />
-            ))
-          ) : (
-            <p className="m-0 text-body-sm text-secondary">
-              Make teams on the Agents page.
+      {confirmDiscard ? null : (
+        <form
+          id="channel-template-form"
+          className={styles.stack}
+          onSubmit={(event) => {
+            event.preventDefault();
+            act(() =>
+              channelTemplates.save({
+                ...(template ? { id: template.id } : {}),
+                name,
+                teams: chosen,
+                agents: chosenAgents,
+                canvas,
+              }),
+            );
+          }}
+        >
+          <Field label="Name">
+            <Input
+              ref={input}
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+            />
+          </Field>
+          <fieldset className={styles.teams}>
+            <legend className="text-label-sm">Agents</legend>
+            {agents.length ? (
+              agents.map((agent) => (
+                <Checkbox
+                  key={agent.pubkey}
+                  label={<AgentLabel agent={agent} />}
+                  checked={chosenAgents.includes(agent.pubkey)}
+                  onCheckedChange={(checked) =>
+                    setChosenAgents((last) =>
+                      checked
+                        ? [...last, agent.pubkey]
+                        : last.filter((pubkey) => pubkey !== agent.pubkey),
+                    )
+                  }
+                />
+              ))
+            ) : (
+              <p className="m-0 text-body-sm text-secondary">No agents yet.</p>
+            )}
+          </fieldset>
+          <fieldset className={styles.teams}>
+            <legend className="text-label-sm">Teams</legend>
+            {teams.length ? (
+              teams.map((team) => (
+                <Checkbox
+                  key={team.id}
+                  label={team.name}
+                  checked={chosen.includes(team.id)}
+                  onCheckedChange={(checked) =>
+                    setChosen((last) =>
+                      checked
+                        ? [...last, team.id]
+                        : last.filter((id) => id !== team.id),
+                    )
+                  }
+                />
+              ))
+            ) : (
+              <p className="m-0 text-body-sm text-secondary">
+                Make teams on the Agents page.
+              </p>
+            )}
+          </fieldset>
+          <Field
+            label="Starting Canvas"
+            description="Markdown, copied into each new channel made from this template."
+          >
+            <Textarea
+              rows={8}
+              value={canvas}
+              onChange={(event) => setCanvas(event.target.value)}
+              placeholder={"# Goal\n\n# Scope\n\n# Success criteria"}
+            />
+          </Field>
+          {error && (
+            <p role="alert" className={styles.error}>
+              {error}
             </p>
           )}
-        </fieldset>
-        <Field
-          label="Starting Canvas"
-          description="Markdown, copied into each new channel made from this template."
-        >
-          <Textarea
-            rows={8}
-            value={canvas}
-            onChange={(event) => setCanvas(event.target.value)}
-            placeholder={"# Goal\n\n# Scope\n\n# Success criteria"}
-          />
-        </Field>
-        {error && (
-          <p role="alert" className={styles.error}>
-            {error}
-          </p>
-        )}
-      </form>
+        </form>
+      )}
     </Dialog>
   );
+}
+
+function sameSet(a: readonly string[], b: readonly string[]) {
+  return a.length === b.length && a.every((item) => b.includes(item));
 }
