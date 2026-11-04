@@ -24,7 +24,6 @@ import {
   BoxArrowUpIcon,
   CheckCircleIcon,
   CircleNotchIcon,
-  LinkBreakIcon,
   GlobeIcon,
   SignOutIcon,
   TrashIcon,
@@ -580,18 +579,24 @@ export function HostedCommunities({
                 </dl>
                 <Button
                   variant="primary"
-                  loading={action === "switch"}
                   disabled={busy || !local}
                   onClick={() =>
-                    void run("switch", async () => {
-                      check(
-                        await api.call("unbind"),
-                        "Could not release the previously connected Buzz identity.",
-                      );
-                      setPendingDeletion(null);
-                      // Unbound is a valid resting state; Connect recovers it.
-                      setIdentity(null);
-                      if (activeRef.current()) await bind();
+                    setConfirm({
+                      title: "Switch to this device’s identity?",
+                      // kgoose revokes an unlinked key: binding it again answers 409.
+                      description:
+                        "The key your account uses now will be permanently unlinked. It can never be linked to a Builderlab account again.",
+                      action: "Switch identity",
+                      run: async () => {
+                        check(
+                          await api.call("unbind"),
+                          "Could not release the previously connected Buzz identity.",
+                        );
+                        setPendingDeletion(null);
+                        // Unbound is a valid resting state; Connect recovers it.
+                        setIdentity(null);
+                        if (activeRef.current()) await bind();
+                      },
                     })
                   }
                 >
@@ -599,39 +604,13 @@ export function HostedCommunities({
                 </Button>
               </section>
             ) : (
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <p className="m-0 flex min-w-0 flex-wrap items-center gap-2 text-body-sm">
-                  <CheckCircleIcon size={16} aria-hidden="true" />
-                  Buzz identity connected{" "}
-                  <span className="break-all font-mono text-muted">
-                    {npub(bound)}
-                  </span>
-                </p>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  disabled={busy}
-                  onClick={() =>
-                    setConfirm({
-                      title: "Unpair this Buzz identity?",
-                      description:
-                        "Your Builderlab account will no longer be connected to this Buzz key. You can reconnect any key later, but community actions stay unavailable until you do.",
-                      action: "Unpair identity",
-                      run: async () => {
-                        check(
-                          await api.call("unbind"),
-                          "Could not unpair the Buzz identity.",
-                        );
-                        setPendingDeletion(null);
-                        setIdentity(null);
-                        await settle();
-                      },
-                    })
-                  }
-                >
-                  <LinkBreakIcon aria-hidden="true" /> Unpair identity
-                </Button>
-              </div>
+              <p className="m-0 flex min-w-0 flex-wrap items-center gap-2 text-body-sm">
+                <CheckCircleIcon size={16} aria-hidden="true" />
+                Buzz identity connected{" "}
+                <span className="break-all font-mono text-muted">
+                  {npub(bound)}
+                </span>
+              </p>
             )}
           </SettingsGroup>
           <div className="mt-section-gap">

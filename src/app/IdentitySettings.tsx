@@ -2,7 +2,10 @@ import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { npubEncode } from "nostr-tools/nip19";
 import type { BackupStatus } from "../features/identity/backup";
 import { BACKUP_FAILURES } from "../features/identity/backup-failure";
-import { backupOfferedFor } from "../features/identity/builderlab-account";
+import {
+  backupOfferedFor,
+  federatedBuilderlabAccount,
+} from "../features/identity/builderlab-account";
 import type { Identity } from "../features/identity/service";
 import type { FederatedIdentity } from "../features/federated-identity/service";
 import { recoveryMessage } from "../features/federated-identity/CommunitySignIn";
@@ -13,6 +16,9 @@ import { SettingsGroup } from "../shared/design-system/ui/SettingsGroup";
 import { PreferenceRow } from "../shared/design-system/ui/PreferenceRow";
 import { IconButton } from "../shared/design-system/ui/IconButton";
 import { Button } from "../shared/design-system/ui/Button";
+import { relativeTimestamp } from "../shared/relative-timestamp";
+import { CHANNEL_ACTIVITY_KINDS } from "../features/relay/channel-activity";
+import type { RelayData } from "../features/relay/service";
 import { Tooltip } from "../shared/design-system/ui/Tooltip";
 import { ToastNotice } from "../shared/design-system/ui/Toast";
 import { CopyIcon } from "../shared/design-system/icons";
@@ -54,12 +60,14 @@ function backupSentence(status: BackupStatus) {
  * Read-only until the consent wording is signed off. Hidden wherever first run
  * would not offer backup, by the same rule.
  */
-function BackupRow({ backup }: { backup: Identity["backup"] }) {
+function BackupRow({
+  backup,
+  offered,
+}: {
+  backup: Identity["backup"];
+  offered: boolean;
+}) {
   const status = useSyncExternalStore(backup.subscribe, backup.snapshot);
-  const [offered, setOffered] = useState(false);
-  useEffect(() => {
-    void backupOfferedFor(backup).then(setOffered);
-  }, [backup]);
   if (!offered || !status) return null;
   return (
     <PreferenceRow
@@ -69,16 +77,173 @@ function BackupRow({ backup }: { backup: Identity["backup"] }) {
   );
 }
 
+/**
+ * When `pubkey` was last active in a channel on the current community's relay,
+ * in Unix seconds; undefined without any activity there.
+ */
+export async function keyActivity(
+  relay: Pick<RelayData, "snapshot">,
+  pubkey: string,
+): Promise<number | undefined> {
+  const connection = relay.snapshot();
+  if (connection.status !== "ready") return undefined;
+  const [latest] = await connection.session.read(
+    // Relay reads must name kinds: channel activity, the messages people see.
+    [{ kinds: [...CHANNEL_ACTIVITY_KINDS], authors: [pubkey], limit: 1 }],
+    { priority: "background" },
+  );
+  return latest?.created_at;
+}
+
+type BackedUp =
+  | { revision: string; linked: string | null; backups: readonly string[] }
+  | { revision: string; failed: string };
+
+/**
+ * The account's linked key when it is backed up, read with the organization
+ * sign-in as first run reads it (`nsec-backups/status`). Backups of other keys
+ * are left out: making one the account's would unlink the linked key, and
+ * kgoose never links an unlinked key again.
+ */
+function BackedUpKeys({
+  viewer,
+  identity,
+  federated,
+  lastActive,
+}: {
+  viewer: string;
+  identity: Identity;
+  federated: FederatedIdentity;
+  lastActive?: ((pubkey: string) => Promise<number | undefined>) | undefined;
+}) {
+  const session = useSyncExternalStore(
+    federated.subscribe,
+    federated.snapshot,
+    federated.snapshot,
+  );
+  const revision =
+    session.status === "signed-in" && session.authority
+      ? session.revision
+      : undefined;
+  const [read, setRead] = useState<BackedUp>();
+  // null: no events there; false: the read failed.
+  const [active, setActive] = useState<
+    Readonly<Record<string, number | null | false>>
+  >({});
+  useEffect(() => {
+    if (!revision) return;
+    let current = true;
+    const account = federatedBuilderlabAccount(
+      { value: revision },
+      federated,
+      identity,
+    );
+    Promise.all([account.linkedKey(), account.backupStatus()]).then(
+      ([linked, backups]) => {
+        if (!current) return;
+        const keys =
+          backups === "unavailable"
+            ? []
+            : backups.filter((key) => key === linked);
+        setRead({ revision, linked, backups: keys });
+        for (const key of keys)
+          void lastActive?.(key).then(
+            (at) => {
+              if (current) setActive((all) => ({ ...all, [key]: at ?? null }));
+            },
+            (error: unknown) => {
+              console.warn("Couldn’t read a backed-up key’s activity", error);
+              if (current) setActive((all) => ({ ...all, [key]: false }));
+            },
+          );
+      },
+      (error: unknown) => {
+        if (current)
+          setRead({
+            revision,
+            failed: error instanceof Error ? error.message : String(error),
+          });
+      },
+    );
+    return () => {
+      current = false;
+    };
+  }, [revision, federated, identity, lastActive]);
+  const shown = read?.revision === revision ? read : undefined;
+  if (!revision)
+    return (
+      <PreferenceRow
+        title="Backed-up keys"
+        subtitle="Sign in to your organization to see your backed-up keys."
+      />
+    );
+  if (!shown)
+    return (
+      <PreferenceRow
+        title="Backed-up keys"
+        subtitle={<span role="status">Checking your backups…</span>}
+      />
+    );
+  if ("failed" in shown)
+    return (
+      <PreferenceRow
+        title="Backed-up keys"
+        subtitle={
+          <span role="alert">Couldn’t check your backups. {shown.failed}</span>
+        }
+      />
+    );
+  return shown.backups.map((key) => {
+    const at = active[key];
+    return (
+      <PreferenceRow
+        key={key}
+        title={["Backed-up key", key === viewer && "This device", "Linked"]
+          .filter(Boolean)
+          .join(" · ")}
+        subtitle={
+          <>
+            <code className={`text-mono ${styles.identityValue}`}>
+              {npubEncode(key)}
+            </code>
+            {lastActive &&
+              (at === undefined
+                ? "Checking activity…"
+                : at === null
+                  ? "No activity here"
+                  : at === false
+                    ? "Couldn’t check activity"
+                    : `Last active ${relativeTimestamp(at)}`)}
+          </>
+        }
+      />
+    );
+  });
+}
+
 export function IdentitySettings({
   viewer,
   identity,
   federatedIdentity,
+  builderlabIdentity,
+  lastActive,
 }: {
   viewer?: string | undefined;
   identity?: Identity | undefined;
   federatedIdentity?: FederatedIdentity | undefined;
+  /**
+   * The same session as the Builderlab plugin's bundled installation, as
+   * first run uses it: the host's own refuses authenticated requests.
+   */
+  builderlabIdentity?: FederatedIdentity | undefined;
+  /** When `pubkey` was last active in a channel on the current community's relay. */
+  lastActive?: ((pubkey: string) => Promise<number | undefined>) | undefined;
 }) {
   const [signingOut, setSigningOut] = useState(false);
+  const [offered, setOffered] = useState(false);
+  useEffect(() => {
+    if (identity) void backupOfferedFor(identity.backup).then(setOffered);
+  }, [identity]);
   const [copyStatus, setCopyStatus] = useState<{
     message: string;
     failed: boolean;
@@ -151,7 +316,15 @@ export function IdentitySettings({
                 {!signingOut && <PrivateKey identity={identity} />}
               </SettingsGroup>
               <SettingsGroup>
-                <BackupRow backup={identity.backup} />
+                <BackupRow backup={identity.backup} offered={offered} />
+                {offered && viewer && builderlabIdentity && (
+                  <BackedUpKeys
+                    viewer={viewer}
+                    identity={identity}
+                    federated={builderlabIdentity}
+                    lastActive={lastActive}
+                  />
+                )}
                 <PreferenceRow
                   title="Sign out of Buzz"
                   subtitle="Remove your private key from this device. Also signs you out of your organization and ends Builderlab and hosted community logins."

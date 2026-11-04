@@ -153,6 +153,8 @@ saved before installation succeeds.
 **I lost my key** opens **Lost your key?**, which first suggests checking another
 signed-in device or a usable backup. Starting over replaces the linked key;
 old messages and profiles are not deleted, but access does not carry over.
+A warning says the old key can never be linked again: kgoose revokes an
+unlinked key, and binding it later fails.
 Owned community hostnames appear only when present; a failed lookup still shows
 its error. **Go back** returns to the prior screen. **Start over with a new key**
 creates a key, unlinks the old key, links the new one, then automatically backs it up.
@@ -204,7 +206,17 @@ client. Both are safe to run again — the link reads the account's current key
 first and does nothing when it already holds this one, and the uploader runs
 again when the user next signs in to Builderlab in Settings — but nothing
 re-runs the link on its own, and Settings has no row for it; the Key backup row
-reports only what the uploader's last pass found.
+reports only what the uploader's last pass found. Below it, a **Backed-up key**
+row shows the account's linked key when `nsec-backups/status` (read with the
+bundled Builderlab session as first run reads it) lists it, marked This device
+when it is, with when it was last active in a channel on the current
+community's relay. Backups of other keys are left out and the row is
+read-only: making another key the account's would unlink the current one, and
+kgoose never links a key again once it is unlinked.
+
+In Builderlab → Communities, a mismatched account offers **Switch to this
+device’s identity** only behind a confirmation that the account's current key
+will be permanently unlinked. There is no Unpair action.
 
 Every lane ends with *Restoring your communities…* when the account check
 listed destinations saved to the account (`src/features/identity/restore-communities.ts`):

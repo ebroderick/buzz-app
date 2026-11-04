@@ -5795,6 +5795,9 @@ it("I lost my key lists the communities the old key owns, Back returns to Welcom
       /Starting over replaces the key linked to your Builderlab account/,
     ),
   ).toBeVisible();
+  expect(
+    screen.getByText("Starting over permanently unlinks your old key."),
+  ).toBeVisible();
   await user.click(screen.getByRole("button", { name: "Go back" }));
   expect(
     screen.getByRole("heading", { name: "Continue with this key" }),

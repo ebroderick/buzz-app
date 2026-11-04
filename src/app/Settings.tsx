@@ -33,6 +33,7 @@ import {
   type ReactNode,
   forwardRef,
   type RefObject,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -61,7 +62,7 @@ import { bundledReadmes } from "../bundled/readmes";
 import { bundledIcons } from "../bundled/icons";
 import type { Identity } from "../features/identity/service";
 import { ProfileSettings } from "./ProfileSettings";
-import { IdentitySettings } from "./IdentitySettings";
+import { IdentitySettings, keyActivity } from "./IdentitySettings";
 import type { FederatedIdentity } from "../features/federated-identity/service";
 import { CommunityLocalSettings } from "./CommunityLocalSettings";
 
@@ -622,6 +623,7 @@ export function Settings({
   communities,
   identity,
   federatedIdentity,
+  builderlabIdentity,
   appearance,
   shortcuts,
   shortcutBindings,
@@ -644,6 +646,8 @@ export function Settings({
   communities: Communities;
   identity?: Identity | undefined;
   federatedIdentity?: FederatedIdentity | undefined;
+  /** The session as the Builderlab plugin's bundled installation, for its account reads. */
+  builderlabIdentity?: FederatedIdentity | undefined;
   appearance: Appearance;
   shortcuts: ShortcutsService;
   shortcutBindings: ShortcutBindings;
@@ -1202,6 +1206,10 @@ export function Settings({
       </PluginListEntry>
     );
   };
+  const lastActive = useCallback(
+    (pubkey: string) => keyActivity(communities.relay, pubkey),
+    [communities.relay],
+  );
   const authorizePluginGit = async (repository: string) => {
     const connection = communities.relay.snapshot();
     return connection.status === "ready"
@@ -1336,6 +1344,8 @@ export function Settings({
             viewer={client.viewer}
             identity={identity}
             federatedIdentity={federatedIdentity}
+            builderlabIdentity={builderlabIdentity}
+            lastActive={lastActive}
           />
         )}
         {developerMode && (

@@ -1,4 +1,6 @@
+import { WarningCircleIcon } from "../../shared/design-system/icons";
 import { Button } from "../../shared/design-system/ui/Button";
+import { InlineHeader } from "../../shared/design-system/ui/Header";
 import type { OwnedCommunity } from "./builderlab-account";
 import { WireframePanel } from "./Wireframe";
 
@@ -61,6 +63,12 @@ export function KeyLost({
           </p>
         </WireframePanel>
       )}
+      {/* kgoose revokes an unlinked key: binding it again answers 409. */}
+      <InlineHeader
+        icon={<WarningCircleIcon size={16} aria-hidden="true" />}
+        title="Your old key can’t be linked again"
+        subtitle="Starting over permanently unlinks your old key."
+      />
       {/* Footer order: secondary first, primary last. */}
       <div data-onboarding-actions="">
         <Button size="lg" onClick={onBack}>

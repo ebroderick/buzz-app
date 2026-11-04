@@ -763,6 +763,7 @@ function ConnectedAppContent({ services }: { services: AppServices }) {
                     communities={services.communities}
                     identity={services.identity}
                     federatedIdentity={services.federatedIdentity}
+                    builderlabIdentity={services.firstRunFederatedIdentity}
                     appearance={services.appearance}
                     shortcuts={services.shortcuts}
                     shortcutBindings={services.shortcutBindings}

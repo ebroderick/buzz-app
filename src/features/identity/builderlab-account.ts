@@ -377,7 +377,7 @@ export function builderlabAccount(
  * returned (`credential.value` is its revision).
  */
 export function federatedBuilderlabAccount(
-  credential: Credential,
+  credential: Pick<Credential, "value">,
   federated: Pick<FederatedIdentity, "snapshot" | "request">,
   identity: BackupIdentity,
 ): FirstRunAccount {

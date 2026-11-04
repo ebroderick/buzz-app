@@ -174,7 +174,7 @@ it("connects the Buzz identity when the account has none", async () => {
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 });
 
-it("pauses create and offers a switch when the account uses another identity", async () => {
+it("pauses create and offers a warned switch when the account uses another identity", async () => {
   routes["/api/builderlab/identity"] = () => ({
     identity: { pubkey_hex: other },
   });
@@ -192,6 +192,16 @@ it("pauses create and offers a switch when the account uses another identity", a
   });
   fireEvent.click(
     screen.getByRole("button", { name: "Switch to this device’s identity" }),
+  );
+  const warning = await screen.findByRole("alertdialog");
+  expect(warning).toHaveTextContent(
+    "It can never be linked to a Builderlab account again.",
+  );
+  expect(calls.map(([url]) => url)).not.toContain("/api/builderlab/unbind");
+  fireEvent.click(
+    within(await screen.findByRole("alertdialog")).getByRole("button", {
+      name: "Switch identity",
+    }),
   );
   await waitFor(() =>
     expect(
@@ -522,6 +532,11 @@ it("does not bind after the card is deactivated during Switch", async () => {
       name: "Switch to this device’s identity",
     }),
   );
+  fireEvent.click(
+    within(await screen.findByRole("alertdialog")).getByRole("button", {
+      name: "Switch identity",
+    }),
+  );
   await waitFor(() =>
     expect(calls.map(([url]) => url)).toContain("/api/builderlab/unbind"),
   );
@@ -626,39 +641,6 @@ const listed = {
   quota_limit: 5,
   can_create: true,
 };
-
-it("drops a failed copy handoff when the identity is unpaired", async () => {
-  routes["/api/builderlab/list"] = () => listed;
-  routes["/api/builderlab/unbind"] = () => ({});
-  const writeText = vi.fn(async (_: string): Promise<void> => {
-    throw new Error("denied");
-  });
-  vi.stubGlobal("navigator", { clipboard: { writeText } });
-  renderCard();
-  fireEvent.click(await screen.findByRole("button", { name: "Copy address" }));
-  expect(
-    await screen.findByRole("button", { name: "Try copying again" }),
-  ).toBeEnabled();
-  routes["/api/builderlab/identity"] = () => ({
-    error: { code: "missing_mapping", setup_needed: true },
-  });
-  fireEvent.click(screen.getByRole("button", { name: "Unpair identity" }));
-  fireEvent.click(
-    within(await screen.findByRole("alertdialog")).getByRole("button", {
-      name: "Unpair identity",
-    }),
-  );
-  expect(
-    await screen.findByRole("button", { name: "Connect Buzz identity" }),
-  ).toBeInTheDocument();
-  expect(
-    screen.queryByRole("button", { name: "Try copying again" }),
-  ).not.toBeInTheDocument();
-  expect(
-    screen.queryByText("wss://north.communities.buzz.xyz"),
-  ).not.toBeInTheDocument();
-  expect(writeText).toHaveBeenCalledTimes(1);
-});
 
 it("does not carry a failed copy handoff into the next sign-in", async () => {
   routes["/api/builderlab/list"] = () => listed;
@@ -1159,20 +1141,15 @@ it("hides but retains an uncertain UUID across A to B to A", async () => {
   await expectSameRequestRecovery(saved);
 });
 
-it("retains the uncertain UUID through unpair and same-owner rebind", async () => {
+it("retains the uncertain UUID through an unpair elsewhere and same-owner rebind", async () => {
   const { saved } = await startUncertainDeletion();
-  routes["/api/builderlab/unbind"] = () => ({});
   routes["/api/builderlab/identity"] = () => ({
     error: { code: "missing_mapping", setup_needed: true },
   });
   routes["/api/builderlab/list"] = () => ({
     error: { code: "missing_mapping", setup_needed: true },
   });
-  fireEvent.click(screen.getByRole("button", { name: "Unpair identity" }));
-  const dialog = await screen.findByRole("alertdialog");
-  fireEvent.click(
-    within(dialog).getByRole("button", { name: "Unpair identity" }),
-  );
+  fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
   await screen.findByRole("button", { name: "Connect Buzz identity" });
   expect(deletionPosts()).toHaveLength(1);
   expect(JSON.parse(localStorage.getItem(DELETION_PENDING_KEY) ?? "")).toEqual(
@@ -1314,6 +1291,11 @@ it("retains the uncertain UUID through Switch back to its owner", async () => {
   });
   fireEvent.click(
     screen.getByRole("button", { name: "Switch to this device’s identity" }),
+  );
+  fireEvent.click(
+    within(await screen.findByRole("alertdialog")).getByRole("button", {
+      name: "Switch identity",
+    }),
   );
   await screen.findByText(saved.request.request_id);
   await expectSameRequestRecovery(saved);
