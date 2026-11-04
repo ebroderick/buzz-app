@@ -129,6 +129,127 @@ pub fn load(root: &Path, env: Option<OsString>) -> AccessRules {
     access
 }
 
+/// The clone URL and agent socket Git uses for a source; the saved source is unchanged.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Transport {
+    pub clone_url: String,
+    /// `None` keeps the process's inherited `SSH_AUTH_SOCK`.
+    pub ssh_auth_sock: Option<PathBuf>,
+    /// `<host><pathPrefix>` of the rule that matched, for diagnostics.
+    pub rule: Option<String>,
+}
+
+impl AccessRules {
+    /// `repository` must already be accepted by `imports::repository_url`.
+    pub fn resolve(
+        &self,
+        repository: &str,
+        relay_authorized: bool,
+        home: &Path,
+    ) -> Result<Transport> {
+        let inherited_agent =
+            std::env::var_os("SSH_AUTH_SOCK").is_some_and(|socket| !socket.is_empty());
+        self.resolve_for(
+            repository,
+            relay_authorized,
+            home,
+            Platform::current(),
+            inherited_agent,
+        )
+    }
+    fn resolve_for(
+        &self,
+        repository: &str,
+        relay_authorized: bool,
+        home: &Path,
+        platform: Option<Platform>,
+        inherited_agent: bool,
+    ) -> Result<Transport> {
+        let direct = Transport {
+            clone_url: repository.into(),
+            ssh_auth_sock: None,
+            rule: None,
+        };
+        let url = url::Url::parse(repository).map_err(crate::err)?;
+        // Git decodes SSH paths, so `%2F..` could leave the prefix after it was checked.
+        let (Some(host), false) = (url.host_str(), url.path().contains('%')) else {
+            return Ok(direct);
+        };
+        for rule in &self.rules {
+            let platform_matches = rule
+                .platforms
+                .as_ref()
+                .is_none_or(|platforms| platform.is_some_and(|p| platforms.contains(&p)));
+            if !platform_matches
+                || !host.eq_ignore_ascii_case(&rule.host)
+                || !url.path().starts_with(&rule.path_prefix)
+            {
+                continue;
+            }
+            let ssh = url.scheme() == "ssh"
+                && url.username() == rule.ssh_user
+                && url.port().is_none_or(|port| port == 22);
+            // Relay authorization is an HTTP header scoped to the entered URL; SSH would drop it.
+            let https = url.scheme() == "https"
+                && rule.rewrite_https
+                && url.port().is_none()
+                && !relay_authorized;
+            if !(ssh || https) {
+                continue;
+            }
+            let ssh_auth_sock = match &rule.ssh_agent_socket {
+                Some(socket) => match agent_socket(socket, home)? {
+                    Some(path) => Some(path),
+                    None => continue,
+                },
+                None if inherited_agent => None,
+                // Without an agent the SSH read would fail where anonymous HTTPS may succeed.
+                None => continue,
+            };
+            return Ok(Transport {
+                clone_url: if https {
+                    format!("ssh://{}@{host}{}", rule.ssh_user, url.path())
+                } else {
+                    repository.into()
+                },
+                ssh_auth_sock,
+                rule: Some(format!("{}{}", rule.host, rule.path_prefix)),
+            });
+        }
+        Ok(direct)
+    }
+}
+
+/// `None` when nothing exists at the path, so the rule does not apply.
+fn agent_socket(socket: &str, home: &Path) -> Result<Option<PathBuf>> {
+    let path = match socket.strip_prefix("~/") {
+        Some(relative) => home.join(relative),
+        None => PathBuf::from(socket),
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileTypeExt;
+        match std::fs::metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_socket() => Ok(Some(path)),
+            Ok(_) => Err(format!(
+                "SSH agent path is not a socket: {}",
+                path.display()
+            )),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(format!(
+                "Cannot read SSH agent socket {}: {error}",
+                path.display()
+            )),
+        }
+    }
+    // Rules with sockets are dropped when loading on Windows.
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        Ok(None)
+    }
+}
+
 struct File {
     rules: Vec<Rule>,
     built_in_rules: bool,
@@ -281,6 +402,257 @@ mod tests {
     }
     fn problems(text: &str) -> Vec<String> {
         parse(text).unwrap().problems
+    }
+
+    fn access(text: &str) -> AccessRules {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join(FILE_NAME), text).unwrap();
+        load(root.path(), None)
+    }
+    fn direct(repository: &str) -> Transport {
+        Transport {
+            clone_url: repository.into(),
+            ssh_auth_sock: None,
+            rule: None,
+        }
+    }
+    const SQUARE_SOCKET: &str = "Library/Application Support/block-ssh-agent/agent.sock";
+    #[cfg(unix)]
+    fn agent(path: &Path) -> std::os::unix::net::UnixListener {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::os::unix::net::UnixListener::bind(path).unwrap()
+    }
+    fn macos(access: &AccessRules, repository: &str, home: &Path) -> Result<Transport> {
+        access.resolve_for(repository, false, home, Some(Platform::Macos), false)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn built_in_selection_is_limited_to_squareup_github() {
+        let home = tempfile::tempdir_in("/tmp").unwrap();
+        let _agent = agent(&home.path().join(SQUARE_SOCKET));
+        for repository in [
+            "https://github.com/other/plugin.git",
+            "https://github.com:8443/squareup/plugin.git",
+            "https://github.com.example/squareup/plugin.git",
+            "https://github.com/squareup/plugin%2F..%2F..%2Fother",
+            "ssh://org-49461806@github.com/squareup/plugin%2F..%2F..%2Fother",
+            "ssh://git@github.com/squareup/plugin.git",
+            "ssh://org-49461806@github.com/other/plugin.git",
+            "ssh://org-49461806@github.com.example/squareup/plugin.git",
+            "ssh://org-49461806@github.com:2222/squareup/plugin.git",
+        ] {
+            assert_eq!(
+                macos(&built_in(), repository, home.path()).unwrap(),
+                direct(repository),
+                "{repository}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn built_in_reads_squareup_https_over_ssh() {
+        let home = tempfile::tempdir_in("/tmp").unwrap();
+        let repository = "https://github.com/squareup/plugin.git";
+        assert_eq!(
+            macos(&built_in(), repository, home.path()).unwrap(),
+            direct(repository)
+        );
+
+        let socket = home.path().join(SQUARE_SOCKET);
+        let _agent = agent(&socket);
+        let expected = Transport {
+            clone_url: "ssh://org-49461806@github.com/squareup/plugin.git".into(),
+            ssh_auth_sock: Some(socket.clone()),
+            rule: Some("github.com/squareup/".into()),
+        };
+        assert_eq!(
+            macos(&built_in(), repository, home.path()).unwrap(),
+            expected
+        );
+        let ssh = "ssh://org-49461806@github.com/squareup/plugin.git";
+        assert_eq!(macos(&built_in(), ssh, home.path()).unwrap(), expected);
+        let port_22 = "ssh://org-49461806@github.com:22/squareup/plugin.git";
+        assert_eq!(
+            macos(&built_in(), port_22, home.path()).unwrap(),
+            Transport {
+                clone_url: port_22.into(),
+                ..expected
+            }
+        );
+
+        assert_eq!(
+            built_in()
+                .resolve_for(repository, true, home.path(), Some(Platform::Macos), false)
+                .unwrap(),
+            direct(repository)
+        );
+        for platform in [Some(Platform::Linux), Some(Platform::Windows), None] {
+            assert_eq!(
+                built_in()
+                    .resolve_for(repository, false, home.path(), platform, true)
+                    .unwrap(),
+                direct(repository),
+                "{platform:?}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn agent_may_be_absent_but_must_be_a_socket_when_present() {
+        let home = tempfile::tempdir_in("/tmp").unwrap();
+        let repository = "ssh://org-49461806@github.com/squareup/plugin.git";
+        assert_eq!(
+            macos(&built_in(), repository, home.path()).unwrap(),
+            direct(repository)
+        );
+        let socket = home.path().join(SQUARE_SOCKET);
+        fs::create_dir_all(socket.parent().unwrap()).unwrap();
+        fs::write(&socket, "").unwrap();
+        assert_eq!(
+            macos(&built_in(), repository, home.path()).unwrap_err(),
+            format!("SSH agent path is not a socket: {}", socket.display())
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_rules_rewrite_other_hosts_and_shadow_built_ins() {
+        let home = tempfile::tempdir_in("/tmp").unwrap();
+        let team_socket = home.path().join("team.sock");
+        let _team = agent(&team_socket);
+        let _square = agent(&home.path().join(SQUARE_SOCKET));
+        let access = access(&format!(
+            r#"{{"version": 1, "rules": [
+                {{"host": "git.example.com", "pathPrefix": "/team/", "sshUser": "git", "sshAgentSocket": "{}"}},
+                {{"host": "github.com", "pathPrefix": "/squareup/", "sshUser": "org-49461806", "sshAgentSocket": "~/team.sock"}},
+                {{"host": "github.com", "pathPrefix": "/ssh-only/", "sshUser": "git", "sshAgentSocket": "~/team.sock", "rewriteHttps": false}},
+                {{"host": "github.com", "pathPrefix": "/linux/", "sshUser": "git", "sshAgentSocket": "~/team.sock", "platforms": ["linux"]}},
+                {{"host": "github.com", "pathPrefix": "/missing/", "sshUser": "git", "sshAgentSocket": "~/missing.sock"}}
+            ]}}"#,
+            team_socket.display()
+        ));
+        let team = |clone_url: &str, rule: &str| Transport {
+            clone_url: clone_url.into(),
+            ssh_auth_sock: Some(team_socket.clone()),
+            rule: Some(rule.into()),
+        };
+        assert_eq!(
+            macos(
+                &access,
+                "https://git.example.com/team/plugin.git",
+                home.path()
+            )
+            .unwrap(),
+            team(
+                "ssh://git@git.example.com/team/plugin.git",
+                "git.example.com/team/"
+            )
+        );
+        assert_eq!(
+            macos(
+                &access,
+                "https://github.com/squareup/plugin.git",
+                home.path()
+            )
+            .unwrap(),
+            team(
+                "ssh://org-49461806@github.com/squareup/plugin.git",
+                "github.com/squareup/"
+            )
+        );
+        assert_eq!(
+            macos(
+                &access,
+                "https://github.com/ssh-only/plugin.git",
+                home.path()
+            )
+            .unwrap(),
+            direct("https://github.com/ssh-only/plugin.git")
+        );
+        assert_eq!(
+            macos(
+                &access,
+                "ssh://git@github.com/ssh-only/plugin.git",
+                home.path()
+            )
+            .unwrap(),
+            team(
+                "ssh://git@github.com/ssh-only/plugin.git",
+                "github.com/ssh-only/"
+            )
+        );
+        assert_eq!(
+            macos(&access, "https://github.com/linux/plugin.git", home.path()).unwrap(),
+            direct("https://github.com/linux/plugin.git")
+        );
+        assert_eq!(
+            access
+                .resolve_for(
+                    "https://github.com/linux/plugin.git",
+                    false,
+                    home.path(),
+                    Some(Platform::Linux),
+                    false
+                )
+                .unwrap(),
+            team("ssh://git@github.com/linux/plugin.git", "github.com/linux/")
+        );
+        assert_eq!(
+            macos(
+                &access,
+                "https://github.com/missing/plugin.git",
+                home.path()
+            )
+            .unwrap(),
+            direct("https://github.com/missing/plugin.git")
+        );
+        assert_eq!(
+            access
+                .resolve_for(
+                    "https://git.example.com/team/plugin.git",
+                    true,
+                    home.path(),
+                    Some(Platform::Macos),
+                    false
+                )
+                .unwrap(),
+            direct("https://git.example.com/team/plugin.git")
+        );
+        assert_eq!(
+            macos(
+                &access,
+                "https://git.example.com/team/a%2F..%2F..%2Fother",
+                home.path()
+            )
+            .unwrap(),
+            direct("https://git.example.com/team/a%2F..%2F..%2Fother")
+        );
+    }
+
+    #[test]
+    fn socketless_rules_need_an_inherited_agent() {
+        let home = tempfile::tempdir().unwrap();
+        let access = access(
+            r#"{"version": 1, "rules": [{"host": "github.com", "pathPrefix": "/example-org/", "sshUser": "git"}]}"#,
+        );
+        let repository = "https://github.com/example-org/plugin.git";
+        assert_eq!(
+            macos(&access, repository, home.path()).unwrap(),
+            direct(repository)
+        );
+        assert_eq!(
+            access
+                .resolve_for(repository, false, home.path(), Some(Platform::Macos), true)
+                .unwrap(),
+            Transport {
+                clone_url: "ssh://git@github.com/example-org/plugin.git".into(),
+                ssh_auth_sock: None,
+                rule: Some("github.com/example-org/".into()),
+            }
+        );
     }
 
     #[test]
