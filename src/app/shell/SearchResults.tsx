@@ -61,7 +61,7 @@ import {
   searchDebounce,
   searchable,
 } from "../../shared/search-debounce";
-import { matchPerson } from "../../features/search/person-match";
+import { matchPerson, normalizeName } from "../../features/search/person-match";
 import {
   personKey,
   rankPeople,
@@ -73,7 +73,10 @@ import { usePersonDirectory } from "./usePersonDirectory";
 import {
   isChannelUuid,
   isHexPubkey,
+  isViewerHandle,
+  normalizeFromHandle,
   normalizeInChannel,
+  operatorMatches,
   parseSearchOperators,
 } from "./parseSearchOperators";
 import { avatarMedia } from "../../shared/avatar-source";
@@ -180,8 +183,15 @@ export function SearchResults({
   const resolveName = useIdentityNames(session.names);
   const list = useChannelList(session.channels);
   const parsed = useMemo(() => parseSearchOperators(query.trim()), [query]);
-  const authorPrompt = /(?:^|\s)from:(@?)([^\s]*)$/i.exec(query);
-  const pickerPrompt = !!authorPrompt && !isHexPubkey(authorPrompt[2] ?? "");
+  const authorPrompt = operatorMatches(
+    query,
+    /(?:^|\s)from:(@?)([^\s]*)$/gi,
+  ).at(-1);
+  // `me` is the viewer, never a name to pick.
+  const pickerPrompt =
+    !!authorPrompt &&
+    !isHexPubkey(authorPrompt[2] ?? "") &&
+    !isViewerHandle(authorPrompt[2] ?? "");
   const profiles = useSyncExternalStore(
     session.profiles.subscribe,
     session.profiles.snapshot,
@@ -262,9 +272,12 @@ export function SearchResults({
     remote: readonly EventData[];
   }>();
   // Completing either from:name or from:@name selects an exact signed key.
-  const datePrompt = /(?:^|\s)(after|before):([^\s]*)$/i.exec(query);
+  const datePrompt = operatorMatches(
+    query,
+    /(?:^|\s)(after|before):([^\s]*)$/gi,
+  ).at(-1);
   const showDateChoices =
-    !!datePrompt && !/^\d{4}-\d{2}-\d{2}$/.test(datePrompt[2] ?? "");
+    !!datePrompt && parseSearchOperators(datePrompt[0]).text !== "";
   const datePresets = [
     ["Today", 0],
     ["Yesterday", 1],
@@ -309,28 +322,70 @@ export function SearchResults({
     [channels, profiles, resolveName],
   );
   const operatorChannel = parsed.in ? normalizeInChannel(parsed.in) : "";
-  const localChannel = operatorChannel
-    ? list.channels.find(
-        (channel) =>
-          channel.name.toLowerCase() === operatorChannel.toLowerCase() ||
-          names.get(channel.id)?.toLowerCase() ===
-            operatorChannel.toLowerCase(),
-      )
+  // `in:@person` names your direct message with them, by key, `me` or name.
+  const operatorPerson = operatorChannel.startsWith("@")
+    ? normalizeFromHandle(operatorChannel)
     : undefined;
+  const operatorPersonKey =
+    operatorPerson && isViewerHandle(operatorPerson)
+      ? session.viewer
+      : operatorPerson && isHexPubkey(operatorPerson)
+        ? operatorPerson.toLowerCase()
+        : undefined;
+  const sameName = (name: string | undefined, wanted: string) =>
+    !!name && !!wanted && normalizeName(name) === normalizeName(wanted);
+  /** Whether `channel` is the conversation the `in:` operator names. */
+  const matchesInOperator = (channel: ChannelSummary) => {
+    if (channel.huddle) return false;
+    if (operatorPerson === undefined)
+      return (
+        channel.name.toLowerCase() === operatorChannel.toLowerCase() ||
+        names.get(channel.id)?.toLowerCase() === operatorChannel.toLowerCase()
+      );
+    if (channel.channelType !== "dm") return false;
+    const others = channel.participants;
+    // A self-DM lists no other participants.
+    if (operatorPersonKey && operatorPersonKey === session.viewer)
+      return others?.length === 0;
+    // Only a one-to-one DM names a single person.
+    if (others?.length !== 1) return false;
+    if (operatorPersonKey) return others[0] === operatorPersonKey;
+    return (
+      sameName(names.get(channel.id), operatorPerson) ||
+      sameName(profiles.get(others[0] ?? "")?.name, operatorPerson)
+    );
+  };
+  const namedChannels =
+    !operatorChannel || isChannelUuid(operatorChannel)
+      ? []
+      : list.channels.filter(matchesInOperator);
+  // A live conversation outranks an archived namesake; live namesakes are
+  // ambiguous, so the search waits for a clearer name rather than guess.
+  const liveNamed = namedChannels.filter((channel) => !channel.archived);
+  const localMatches = liveNamed.length ? liveNamed : namedChannels;
+  const localChannel = localMatches.length === 1 ? localMatches[0] : undefined;
   const needsPublicLookup =
     !scopedChannelId &&
     !!operatorChannel &&
+    operatorPerson === undefined &&
     !isChannelUuid(operatorChannel) &&
-    !localChannel;
+    !localMatches.length;
   const operatorPublicChannels = usePublicChannelSearch(
     session,
     needsPublicLookup ? operatorChannel : "",
     list.status === "ready",
     true,
   );
+  const publicMatch =
+    operatorPublicChannels.channels.length === 1
+      ? operatorPublicChannels.channels[0]
+      : undefined;
   const operatorChannelId = isChannelUuid(operatorChannel)
     ? operatorChannel
-    : (localChannel?.id ?? operatorPublicChannels.channels[0]?.id);
+    : (localChannel?.id ?? (needsPublicLookup ? publicMatch?.id : undefined));
+  const operatorChannelAmbiguous =
+    localMatches.length > 1 ||
+    (needsPublicLookup && operatorPublicChannels.channels.length > 1);
   // The author picker also matches a selectable agent by its own name, so a
   // completed from: name resolves against the same names.
   const agentSnapshot = useSyncExternalStore(
@@ -360,7 +415,7 @@ export function SearchResults({
   // Ambiguity is known only after a completed token. Keep its original span so
   // choosing a key does not discard free text or other operators after it.
   const completedAuthor = showAmbiguousPicker
-    ? [...query.matchAll(/(?:^|\s)from:(@?)(\S+)/gi)].at(-1)
+    ? operatorMatches(query, /(?:^|\s)from:(@?)(\S+)/gi).at(-1)
     : undefined;
   const authorToken = authorPrompt ?? completedAuthor;
   const authorNeedle = (authorPrompt?.[2] ?? parsed.from ?? "")
@@ -1162,22 +1217,37 @@ export function SearchResults({
     slowPeople,
     resultsShown && slowMessages,
   );
+  const operatorChannelProblem =
+    scopedChannelId ||
+    !operatorChannel ||
+    operatorChannelId ||
+    operatorLookupPending ||
+    operatorLookupError ||
+    list.status === "loading"
+      ? undefined
+      : operatorChannelAmbiguous
+        ? `More than one conversation is named “${operatorChannel}”. Search in that conversation instead.`
+        : `No conversation named “${operatorChannel}”.`;
   const messageEmpty =
     operatorLookupPending || search.loading
       ? undefined
       : operatorLookupError || search.error
         ? "Message search is unavailable."
-        : query.trim()
-          ? directoryPending
-            ? undefined
-            : search.tooShort
-              ? // Only the last word is matched as a prefix, so name it
-                // once earlier words make the whole query long enough.
-                `Type at least ${MESSAGE_SEARCH_MIN_CHARS} characters${/\s/.test(parsed.text.trim()) ? " in the last word" : ""} to search messages.`
-              : "No matching messages in accessible conversations."
-          : scopedChannelId
-            ? "Type to search messages in this conversation."
-            : "Type to search messages in this community.";
+        : operatorChannelProblem
+          ? operatorChannelProblem
+          : query.trim()
+            ? directoryPending
+              ? undefined
+              : search.tooShort
+                ? // Only the last word is matched as a prefix, so name it
+                  // once earlier words make the whole query long enough.
+                  `Type at least ${MESSAGE_SEARCH_MIN_CHARS} characters${/\s/.test(parsed.text.trim()) ? " in the last word" : ""} to search messages.`
+                : search.onlyExclusions
+                  ? "Add a word or “phrase” to search for alongside -exclusions."
+                  : "No matching messages in accessible conversations."
+            : scopedChannelId
+              ? "Type to search messages in this conversation."
+              : "Type to search messages in this community.";
   // A retry removes its own focused button. Return focus to the combobox,
   // which owns keyboard navigation, before the retry starts.
   const retryFromInput = (retry: () => unknown) => () => {
@@ -1436,6 +1506,14 @@ export function SearchResults({
       }
       isAction={isSearchAction}
     >
+      {/* Guidance, not status: outside the live region so opening search
+          does not announce it. */}
+      {!query.trim() && (
+        <p className="px-3 pb-2 text-body-sm text-subtle">
+          Filter messages with from:me or from:@name, in:#channel or in:@person,
+          after:, before:, on: or during: a date, "exact phrase" and -word.
+        </p>
+      )}
       <div
         className="space-y-2 px-3 text-body-sm text-subtle"
         aria-live="polite"
