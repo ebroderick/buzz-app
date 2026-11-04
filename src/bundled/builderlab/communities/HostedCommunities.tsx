@@ -595,6 +595,9 @@ export function HostedCommunities({
                         setPendingDeletion(null);
                         // Unbound is a valid resting state; Connect recovers it.
                         setIdentity(null);
+                        // The unlink is done: retire its confirmation so a
+                        // failed bind is never retried by unlinking again.
+                        setConfirm(null);
                         if (activeRef.current()) await bind();
                       },
                     })

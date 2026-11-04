@@ -548,6 +548,39 @@ it("does not bind after the card is deactivated during Switch", async () => {
   ).toBeInTheDocument();
 });
 
+it("never unlinks again after Switch unlinks but its bind fails", async () => {
+  routes["/api/builderlab/identity"] = () => ({
+    identity: { pubkey_hex: other },
+  });
+  routes["/api/builderlab/unbind"] = () => ({});
+  // The bind may have landed on the server even though its response was lost.
+  routes["/api/builderlab/bind"] = () =>
+    new Response("Bad gateway", { status: 502 });
+  renderCard();
+  fireEvent.click(
+    await screen.findByRole("button", {
+      name: "Switch to this device’s identity",
+    }),
+  );
+  fireEvent.click(
+    within(await screen.findByRole("alertdialog")).getByRole("button", {
+      name: "Switch identity",
+    }),
+  );
+  const connect = await screen.findByRole("button", {
+    name: "Connect Buzz identity",
+  });
+  expect(screen.queryByRole("alertdialog")).toBeNull();
+  routes["/api/builderlab/bind"] = () => ({ identity: { pubkey_hex: local } });
+  routes["/api/builderlab/identity"] = () => ({
+    identity: { pubkey_hex: local },
+  });
+  fireEvent.click(connect);
+  await screen.findByText("Buzz identity connected");
+  const unlinks = calls.filter(([url]) => url === "/api/builderlab/unbind");
+  expect(unlinks).toHaveLength(1);
+});
+
 async function typeName(value: string) {
   const input = await screen.findByPlaceholderText("north-star");
   await waitFor(() => expect(input).toBeEnabled());

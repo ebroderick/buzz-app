@@ -409,7 +409,7 @@ it("shows only the account's linked backed-up key with its last activity, read-o
   ]);
 });
 
-it("shows no backed-up keys when the account has none", async () => {
+it("shows no backed-up key when the account has none", async () => {
   vi.stubEnv("VITE_BUZZ_BUILDERLAB_URL", "https://builderlab.example");
   const host = backupHost(at(1, { status: "complete" }));
   const fi = federatedFixture();
@@ -433,8 +433,8 @@ it("shows no backed-up keys when the account has none", async () => {
   );
   await waitFor(() => expect(fi.request).toHaveBeenCalledTimes(2));
   await act(async () => {});
-  expect(screen.queryByText("Backed-up keys")).toBeNull();
-  expect(screen.queryByText("Checking your backups…")).toBeNull();
+  expect(screen.queryByText(/^Backed-up key/)).toBeNull();
+  expect(screen.queryByText("Checking your backup…")).toBeNull();
 });
 
 it.each([
@@ -454,3 +454,12 @@ it.each([
     );
   },
 );
+
+it("reports a relay that isn't connected as an unchecked read, not as no activity", async () => {
+  const relay = {
+    snapshot: () => ({ status: "connecting" }),
+  } as unknown as Parameters<typeof keyActivity>[0];
+  await expect(keyActivity(relay, viewer)).rejects.toThrow(
+    "Relay is connecting",
+  );
+});

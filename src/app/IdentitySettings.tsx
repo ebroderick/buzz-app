@@ -79,14 +79,16 @@ function BackupRow({
 
 /**
  * When `pubkey` was last active in a channel on the current community's relay,
- * in Unix seconds; undefined without any activity there.
+ * in Unix seconds; undefined without any activity there. Throws while the relay
+ * isn't connected, so that reads as unchecked rather than inactive.
  */
 export async function keyActivity(
   relay: Pick<RelayData, "snapshot">,
   pubkey: string,
 ): Promise<number | undefined> {
   const connection = relay.snapshot();
-  if (connection.status !== "ready") return undefined;
+  if (connection.status !== "ready")
+    throw new Error(`Relay is ${connection.status}`);
   const [latest] = await connection.session.read(
     // Relay reads must name kinds: channel activity, the messages people see.
     [{ kinds: [...CHANNEL_ACTIVITY_KINDS], authors: [pubkey], limit: 1 }],
@@ -96,7 +98,7 @@ export async function keyActivity(
 }
 
 type BackedUp =
-  | { revision: string; linked: string | null; backups: readonly string[] }
+  | { revision: string; key: string | null }
   | { revision: string; failed: string };
 
 /**
@@ -105,7 +107,7 @@ type BackedUp =
  * are left out: making one the account's would unlink the linked key, and
  * kgoose never links an unlinked key again.
  */
-function BackedUpKeys({
+function BackedUpKey({
   viewer,
   identity,
   federated,
@@ -126,13 +128,12 @@ function BackedUpKeys({
       ? session.revision
       : undefined;
   const [read, setRead] = useState<BackedUp>();
-  // null: no events there; false: the read failed.
-  const [active, setActive] = useState<
-    Readonly<Record<string, number | null | false>>
-  >({});
+  // undefined: checking; null: no events there; false: the read failed.
+  const [active, setActive] = useState<number | null | false>();
   useEffect(() => {
     if (!revision) return;
     let current = true;
+    setActive(undefined);
     const account = federatedBuilderlabAccount(
       { value: revision },
       federated,
@@ -141,19 +142,19 @@ function BackedUpKeys({
     Promise.all([account.linkedKey(), account.backupStatus()]).then(
       ([linked, backups]) => {
         if (!current) return;
-        const keys =
-          backups === "unavailable"
-            ? []
-            : backups.filter((key) => key === linked);
-        setRead({ revision, linked, backups: keys });
-        for (const key of keys)
+        const key =
+          linked && backups !== "unavailable" && backups.includes(linked)
+            ? linked
+            : null;
+        setRead({ revision, key });
+        if (key)
           void lastActive?.(key).then(
             (at) => {
-              if (current) setActive((all) => ({ ...all, [key]: at ?? null }));
+              if (current) setActive(at ?? null);
             },
             (error: unknown) => {
-              console.warn("Couldn’t read a backed-up key’s activity", error);
-              if (current) setActive((all) => ({ ...all, [key]: false }));
+              console.warn("Couldn’t read the backed-up key’s activity", error);
+              if (current) setActive(false);
             },
           );
       },
@@ -173,52 +174,49 @@ function BackedUpKeys({
   if (!revision)
     return (
       <PreferenceRow
-        title="Backed-up keys"
-        subtitle="Sign in to your organization to see your backed-up keys."
+        title="Backed-up key"
+        subtitle="Sign in to your organization to see your backed-up key."
       />
     );
   if (!shown)
     return (
       <PreferenceRow
-        title="Backed-up keys"
-        subtitle={<span role="status">Checking your backups…</span>}
+        title="Backed-up key"
+        subtitle={<span role="status">Checking your backup…</span>}
       />
     );
   if ("failed" in shown)
     return (
       <PreferenceRow
-        title="Backed-up keys"
+        title="Backed-up key"
         subtitle={
-          <span role="alert">Couldn’t check your backups. {shown.failed}</span>
+          <span role="alert">Couldn’t check your backup. {shown.failed}</span>
         }
       />
     );
-  return shown.backups.map((key) => {
-    const at = active[key];
-    return (
-      <PreferenceRow
-        key={key}
-        title={["Backed-up key", key === viewer && "This device", "Linked"]
-          .filter(Boolean)
-          .join(" · ")}
-        subtitle={
-          <>
-            <code className={`text-mono ${styles.identityValue}`}>
-              {npubEncode(key)}
-            </code>
-            {lastActive &&
-              (at === undefined
-                ? "Checking activity…"
-                : at === null
-                  ? "No activity here"
-                  : at === false
-                    ? "Couldn’t check activity"
-                    : `Last active ${relativeTimestamp(at)}`)}
-          </>
-        }
-      />
-    );
-  });
+  if (!shown.key) return null;
+  return (
+    <PreferenceRow
+      title={["Backed-up key", shown.key === viewer && "This device", "Linked"]
+        .filter(Boolean)
+        .join(" · ")}
+      subtitle={
+        <>
+          <code className={`text-mono ${styles.identityValue}`}>
+            {npubEncode(shown.key)}
+          </code>
+          {lastActive &&
+            (active === undefined
+              ? "Checking activity…"
+              : active === null
+                ? "No activity here"
+                : active === false
+                  ? "Couldn’t check activity"
+                  : `Last active ${relativeTimestamp(active)}`)}
+        </>
+      }
+    />
+  );
 }
 
 export function IdentitySettings({
@@ -318,7 +316,7 @@ export function IdentitySettings({
               <SettingsGroup>
                 <BackupRow backup={identity.backup} offered={offered} />
                 {offered && viewer && builderlabIdentity && (
-                  <BackedUpKeys
+                  <BackedUpKey
                     viewer={viewer}
                     identity={identity}
                     federated={builderlabIdentity}
