@@ -419,6 +419,9 @@ export type RunnerHost = {
   reads(agent: Agent, event: Pick<RelayEvent, "tags">): boolean | undefined;
   /** Whether the event's channel is a DM between the agent and one other. */
   dm(agent: Agent, event: RelayEvent): boolean;
+  /** Whether the event came as it would have with no watch keeping channels
+   * live or looking them up; one heard `live`, or read by catch-up. */
+  unattended(agent: Agent, event: RelayEvent, live: boolean): boolean;
   /** While the owner is still starting this chat, settles once it can take
    * the agent's events; undefined otherwise. */
   starting?(agent: Agent, channelId: string): Promise<void> | undefined;
@@ -1596,7 +1599,7 @@ export class AgentRunners {
         (!fanning && this.hasSeen(runner, event.id, channel)) ||
         event.pubkey === agent.pubkey
           ? { triggers: [] }
-          : this.heard(runner, agent, event, fanning?.done);
+          : this.heard(runner, agent, event, fanning?.done, false);
       if (heard.discarded?.length) {
         this.heardLive(agent, event, new Set(heard.discarded));
         runner.fanning = {
@@ -2038,30 +2041,38 @@ export class AgentRunners {
     });
     return pass ? result : undefined;
   }
-  /** What `event` wakes now, and whether other matching watches still wait
-   * for its channel's roster to be confirmed. */
+  /** What `event`, heard `live` or read by catch-up, wakes now, and whether
+   * other matching watches still wait for its channel's roster to be
+   * confirmed. */
   private heard(
     runner: Runner,
     agent: Agent,
     event: RelayEvent,
     done: ReadonlySet<string> = new Set(),
+    live = true,
   ): Heard {
     if (this.stopped[runner.key]?.[event.id] !== undefined)
       return { triggers: [] };
+    // Mentions wake an agent only in what the owner's app hears for the
+    // owner. An event it has only because watches keep its channel live, or
+    // looked the channel up, addresses no one: only watches hear it.
+    const addressable = this.host.unattended(agent, event, live);
     // A one-to-one DM is always addressed to the other member, whoever else it
     // names, so no mention is needed. Only new messages: an edit is not a new
     // turn, and a reaction is not conversation. A group DM still needs the
     // mention.
     if (
+      addressable &&
       event.kind === 9 &&
       event.pubkey !== agent.pubkey &&
       this.host.dm(agent, event)
     )
       return { triggers: [{ type: "mention", event }] };
-    // Addressed events never reach a watch. Only conversation starts a run, not
-    // an encrypted DM (kind 4) it cannot read yet. A reaction to its message is
-    // not addressed, so a watch can still hear it.
-    if (addressedTo(event, agent.pubkey))
+    // An addressed event the owner's app hears for the owner never reaches a
+    // watch. Only conversation starts a run, not an encrypted DM (kind 4) it
+    // cannot read yet. A reaction to its message is not addressed, so a watch
+    // can still hear it.
+    if (addressable && addressedTo(event, agent.pubkey))
       return CHAT_KINDS.includes(event.kind)
         ? { triggers: [{ type: "mention", event }] }
         : { triggers: [] };

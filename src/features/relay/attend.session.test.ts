@@ -221,6 +221,70 @@ it("resolves the channels a read of every channel finds, of any kinds, once disc
   expect((await reading).map(({ kind }) => kind).sort()).toEqual([7, 9]);
 });
 
+it.each([
+  ["of chat, as any read of messages does, the viewer's own", [9], true],
+  ["of other kinds too, only agents'", [9, 7], false],
+] as const)(
+  "counts a channel a read of every channel resolves %s",
+  async (_, kinds, viewers) => {
+    const h = harness();
+    await h.discover();
+    expect(h.owner.session.unattended(OPEN, false)).toBe(true);
+    const reading = h.owner.session.read(
+      [{ kinds: [...kinds], since: 11, until: 20, limit: 16 }],
+      { fresh: true, resolveChannels: true },
+    );
+    const asked = () =>
+      h.wire.pending.findIndex((entry) =>
+        entry.filters.some((filter) => filter.kinds?.includes(9)),
+      );
+    await vi.waitFor(() => expect(asked()).not.toBe(-1));
+    h.wire.pending.splice(asked(), 1)[0]?.respond([
+      signed(other, {
+        kind: 9,
+        content: "message",
+        created_at: 15,
+        tags: [["h", OPEN]],
+      }),
+    ] as RelayEvent[]);
+    await vi.waitFor(() =>
+      expect(h.wire.pending.some((entry) => asks(entry.filters, OPEN))).toBe(
+        true,
+      ),
+    );
+    h.wire.pending
+      .find((entry) => asks(entry.filters, OPEN))
+      ?.respond(channel(OPEN, "public") as RelayEvent[]);
+    expect(await reading).toHaveLength(1);
+    // Not attended, so live says the same; catch-up reads tell them apart.
+    expect(h.owner.session.unattended(OPEN, false)).toBe(viewers);
+    expect(h.owner.session.unattended(OPEN, true)).toBe(viewers);
+  },
+);
+
+it("counts an attended channel the viewer has not joined or opened as heard only for agents, live and read", async () => {
+  const h = harness();
+  const stop = h.owner.session.attend([OPEN]);
+  await h.discover();
+  await vi.waitFor(() =>
+    expect(h.wire.pending.some((entry) => asks(entry.filters, OPEN))).toBe(
+      true,
+    ),
+  );
+  h.wire.pending
+    .find((entry) => asks(entry.filters, OPEN))
+    ?.respond(channel(OPEN, "public") as RelayEvent[]);
+  await vi.waitFor(() =>
+    expect(h.update.mock.lastCall?.[0] ?? []).toContain(OPEN),
+  );
+  expect(h.owner.session.unattended(OPEN, true)).toBe(false);
+  // Its metadata came only from the attendance's lookup.
+  expect(h.owner.session.unattended(OPEN, false)).toBe(false);
+  // A channel no agent attends is heard as without attendance.
+  expect(h.owner.session.unattended(CLOSED, true)).toBe(true);
+  stop();
+});
+
 it("does not answer a read of every channel that resolves its channels before discovery, rather than drop what it cannot place", async () => {
   const h = harness();
   // Discovery has not succeeded: its roster read failed.

@@ -1754,6 +1754,11 @@ export class AgentsService extends Service implements Agents {
       member: (agent, event) => this.member(agent, event),
       reads: (agent, event) => this.reads(agent, event),
       dm: (agent, event) => this.dm(agent, event),
+      unattended: (agent, event, live) => {
+        const channel = event.tags.find((tag) => tag[0] === "h")?.[1];
+        const session = this.bindingOf(agent)?.session;
+        return !channel || !session || session.unattended(channel, live);
+      },
       starting: (agent, channelId) =>
         this.bindingOf(agent)?.session.channelWrites.starting(channelId),
       community: (agent) => this.bindingOf(agent),

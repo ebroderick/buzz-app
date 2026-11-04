@@ -663,20 +663,16 @@ export function createRelaySession(
     // So does a read of every channel that asks for it, of any kinds.
     const chat = (kind: number) => [9, 40002, 40008].includes(kind);
     const broad = !!settings?.resolveChannels;
-    if (
-      channelTraffic &&
-      filters.every(
-        (filter) =>
-          (broad ||
-            filter.search !== undefined ||
-            !!filter.authors?.length ||
-            filter.since !== undefined ||
-            filter.until !== undefined) &&
-          !filter["#h"]?.length &&
-          !!filter.kinds?.length &&
-          (broad || filter.kinds.every(chat)),
-      )
-    ) {
+    const resolves = (filter: ReadFilter, broad: boolean) =>
+      (broad ||
+        filter.search !== undefined ||
+        !!filter.authors?.length ||
+        filter.since !== undefined ||
+        filter.until !== undefined) &&
+      !filter["#h"]?.length &&
+      !!filter.kinds?.length &&
+      (broad || filter.kinds.every(chat));
+    if (channelTraffic && filters.every((filter) => resolves(filter, broad))) {
       // A lookup may extend a discovered list, never stand in for it.
       if (broad && channels.queries.list().status !== "ready")
         throw new ReadError("unavailable", "Channels are not discovered yet.");
@@ -692,6 +688,11 @@ export function createRelaySession(
           }),
         ),
       ];
+      // What only `resolveChannels` looks up is known for agents alone.
+      if (!filters.every((filter) => resolves(filter, false))) {
+        for (const id of ids)
+          if (!channels.queries.get?.(id)) learnedForAgents.add(id);
+      } else for (const id of ids) learnedForAgents.delete(id);
       await channels.queries.resolve?.(ids, settings);
       // A read of every channel keeps what visibility keeps below.
       if (!broad)
@@ -1257,6 +1258,14 @@ export function createRelaySession(
   const followRevocations = new Set<() => void>();
   /** Channels each `attend` keeps live for agents' watches, its own list. */
   const attended = new Set<readonly string[]>();
+  /** The channels the live routes carry for the viewer: joined and opened,
+   * as without any `attend`. */
+  let viewerLive: ReadonlySet<string> = new Set();
+  /** Channels the session knows only because agents' watches looked them
+   * up: an attended channel's metadata read, or a read of every channel that
+   * resolved channels the viewer's own reads would not. One leaves once the
+   * viewer's traffic knows it too: joined, opened or looked up. */
+  const learnedForAgents = new Set<string>();
   /** Attended channels read since the last wait ended, in flight or done.
    * One known again leaves it, so it is read at once if it is unknown again. */
   const attendChecked = new Set<string>();
@@ -1317,6 +1326,7 @@ export function createRelaySession(
     for (const id of fresh) {
       attendChecked.add(id);
       attendReading.add(id);
+      learnedForAgents.add(id);
     }
     for (let start = 0; start < fresh.length; start += 128) {
       const batch = fresh.slice(start, start + 128);
@@ -2309,6 +2319,15 @@ export function createRelaySession(
       const channel = channels.queries.get?.(channelId);
       return !channel || !!channel.pending;
     },
+    /** Whether an event of `channelId` reaches agents as it would with no
+     * `attend` and no `resolveChannels` read: not from a channel the session
+     * knows only from agents' lookups, nor, heard `live`, one the live routes
+     * carry only because it is attended. */
+    unattended(channelId: string, live: boolean): boolean {
+      if (viewerLive.has(channelId)) return true;
+      if (learnedForAgents.has(channelId)) return false;
+      return !live || ![...attended].some((ids) => ids.includes(channelId));
+    },
     /** Verified, access-filtered live-phase events of any kind, after reconciliation.
      * Never finite reads or local intent, except the viewer's own messages in
      * a Solo chat this device is starting: those arrive here before the relay
@@ -3203,6 +3222,8 @@ export function createRelaySession(
     // and admits them: joined channels share batched wires, and opened ones,
     // ranked first by `prioritize`, keep theirs; the rest get finite reads.
     const listened = new Set(ids);
+    viewerLive = listened;
+    for (const id of listened) learnedForAgents.delete(id);
     ids.push(
       ...[...new Set([...attended].flat())].filter((id) => {
         const channel = channels.queries.get?.(id);

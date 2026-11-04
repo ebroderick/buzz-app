@@ -336,6 +336,12 @@ that starts at 30 s and doubles up to 5 minutes, and after a reconnect or a new
 every channel with `resolveChannels` resolves the channels its events name, of
 any kinds, before visibility filtering, as ranked search does for chat kinds;
 before discovery it fails and is tried again, rather than drop what it finds.
+`session.unattended(id, live)` says whether an event of a channel reached the
+session as it would have with neither: false for a channel known only from those
+lookups, and, for a live event, one the live routes carry only because it is
+attended. Agents take mentions and one-to-one DM turns only from events for
+which it is true, so watches do not change who a mention wakes; they still hear
+the rest.
 Shared composers and reactions remain unavailable for nonmembers; message helpers
 and workflows do not acquire write eligibility from public metadata. The relay
 remains the final write authority, including low-level outbox intent.

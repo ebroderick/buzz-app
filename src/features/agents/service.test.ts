@@ -328,6 +328,7 @@ async function setup({
     reconnecting: fake.reconnecting,
     recover: fake.recover,
     unrouted: fake.unrouted,
+    learned: fake.learned,
     pending: fake.pending,
     memories: fake.memories,
     archives: fake.archives,
@@ -8430,6 +8431,100 @@ it("answers a mention catch-up reads from while it listened, not one from before
     vi.useRealTimers();
   }
 });
+
+it.each([
+  ["its watch does not match it, nothing", [7], []],
+  ["its watch matches it, the watch", [9], ["watch"]],
+] as const)(
+  "gives no mention turn from a channel the app hears only for a watch: when %s wakes",
+  async (_, kinds, types) => {
+    const { service, run, emit, attended } = await setup();
+    await service.create({ type: "example/echo", name: "Echo" });
+    await service.save(bot, {
+      attentionEnabled: true,
+      attention: {
+        "watch/plaza": {
+          type: "event",
+          interest_id: "default",
+          enabled: true,
+          since: 1,
+          channels: [plaza],
+          kinds: [...kinds],
+        },
+      },
+    });
+    await vi.waitFor(() => expect([...attended].flat()).toContain(plaza));
+    // Without the watch, the app would not hear plaza: it is neither joined
+    // nor opened. A mention in a channel the owner is in still wakes it.
+    emit({
+      events: [
+        event("plaza", {
+          tags: [
+            ["h", plaza],
+            ["p", bot],
+          ],
+        }),
+        event("open", {
+          tags: [
+            ["h", channel],
+            ["p", bot],
+          ],
+        }),
+      ],
+    });
+    await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(1 + types.length));
+    await settle();
+    expect(
+      run.mock.calls.map(([delivery]) => [
+        delivery.trigger.type,
+        delivery.trigger.type === "mention" || delivery.trigger.type === "watch"
+          ? delivery.trigger.event.id.replace(/0+$/, "")
+          : undefined,
+      ]),
+    ).toEqual(
+      expect.arrayContaining([
+        ["mention", "open"],
+        ...types.map((type) => [type, "plaza"]),
+      ]),
+    );
+    expect(run).toHaveBeenCalledTimes(1 + types.length);
+  },
+);
+
+it.each([
+  ["the owner's app knew it", false, "mention"],
+  ["only agents' lookups found it", true, "catch-up"],
+] as const)(
+  "answers a mention catch-up reads in a public channel only if %s",
+  async (_, learnedOnly, type) => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const start = nowSeconds();
+      const { service, run, history, recover, learned } = await setup({
+        identities: [echo],
+      });
+      await service.save(bot, {
+        attentionEnabled: true,
+        attention: {
+          "watch/all": { ...chat["watch/chat"], channels: "all" },
+        },
+      });
+      await settle();
+      if (learnedOnly) learned.add(plaza);
+      vi.setSystemTime((start + 60) * 1000);
+      history.push(
+        eventDto(message(author, plaza, "new", start + 30, [["p", bot]])),
+      );
+      recover();
+      await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(1));
+      await settle();
+      expect(heard(run)).toEqual(["new"]);
+      expect(run.mock.calls[0]?.[0]).toMatchObject({ trigger: { type } });
+    } finally {
+      vi.useRealTimers();
+    }
+  },
+);
 
 it("wakes nothing from the time its attention was off", async () => {
   vi.useFakeTimers({ toFake: ["Date"] });
