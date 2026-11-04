@@ -107,7 +107,7 @@ pub fn status(path: Result<PathBuf>, catalog: &Catalog) -> Managed {
         }
     };
     let shown = path.display().to_string();
-    let text = match read(&path) {
+    let text = match read_file(&path, "Managed plugin file", MAX_BYTES) {
         Ok(Some(text)) => text,
         Ok(None) => return Managed::Absent,
         Err(reason) => {
@@ -138,11 +138,12 @@ pub fn status(path: Result<PathBuf>, catalog: &Catalog) -> Managed {
     }
 }
 
-fn read(path: &Path) -> Result<Option<String>> {
+/// Reads a small policy file. `None` when it does not exist; `label` names it in errors.
+pub(crate) fn read_file(path: &Path, label: &str, max_bytes: u64) -> Result<Option<String>> {
     // A symlink is followed, as configuration managers commonly link files into place.
     match fs::metadata(path) {
         Ok(meta) if meta.is_file() => {}
-        Ok(_) => return Err("Managed plugin file must be a regular file".into()),
+        Ok(_) => return Err(format!("{label} must be a regular file")),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(err(error)),
     }
@@ -160,18 +161,18 @@ fn read(path: &Path) -> Result<Option<String>> {
         Err(error) => return Err(err(error)),
     };
     if !file.metadata().map_err(err)?.is_file() {
-        return Err("Managed plugin file must be a regular file".into());
+        return Err(format!("{label} must be a regular file"));
     }
     let mut bytes = vec![];
-    file.take(MAX_BYTES + 1)
+    file.take(max_bytes + 1)
         .read_to_end(&mut bytes)
         .map_err(err)?;
-    if bytes.len() as u64 > MAX_BYTES {
-        return Err("Managed plugin file exceeds 256 KiB".into());
+    if bytes.len() as u64 > max_bytes {
+        return Err(format!("{label} exceeds {} KiB", max_bytes / 1024));
     }
     String::from_utf8(bytes)
         .map(Some)
-        .map_err(|_| "Managed plugin file must be UTF-8".into())
+        .map_err(|_| format!("{label} must be UTF-8"))
 }
 
 pub fn parse(text: &str) -> Result<Policy> {

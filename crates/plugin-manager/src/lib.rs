@@ -13,6 +13,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+pub mod access;
 pub mod imports;
 pub mod managed;
 mod migrate_agent_flag;
