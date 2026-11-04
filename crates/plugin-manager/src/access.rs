@@ -191,11 +191,13 @@ impl AccessRules {
             let ssh = url.scheme() == "ssh"
                 && url.username() == rule.ssh_user
                 && url.port().is_none_or(|port| port == 22);
-            // Relay authorization is an HTTP header scoped to the entered URL; SSH would drop it.
-            let https = url.scheme() == "https"
-                && rule.rewrite_https
-                && url.port().is_none()
-                && !relay_authorized;
+            let https = url.scheme() == "https" && url.port().is_none();
+            // The first matching rule decides an HTTPS source, so an SSH-only file rule
+            // overrides a later rewrite. Relay authorization is an HTTP header scoped to the
+            // entered URL; SSH would drop it.
+            if https && (!rule.rewrite_https || relay_authorized) {
+                return Ok(direct);
+            }
             if !(ssh || https) {
                 continue;
             }
@@ -708,6 +710,29 @@ mod tests {
             )
             .unwrap(),
             direct("https://git.example.com/team/a%2F..%2F..%2Fother")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ssh_only_file_rule_shadows_the_built_in_https_rewrite() {
+        let home = tempfile::tempdir_in("/tmp").unwrap();
+        let team_socket = home.path().join("team.sock");
+        let _team = agent(&team_socket);
+        let _square = agent(&home.path().join(SQUARE_SOCKET));
+        let access = access(
+            r#"{"version": 1, "rules": [{"host": "github.com", "pathPrefix": "/squareup/", "sshUser": "org-49461806", "sshAgentSocket": "~/team.sock", "rewriteHttps": false}]}"#,
+        );
+        let https = "https://github.com/squareup/plugin.git";
+        assert_eq!(macos(&access, https, home.path()).unwrap(), direct(https));
+        let ssh = "ssh://org-49461806@github.com/squareup/plugin.git";
+        assert_eq!(
+            macos(&access, ssh, home.path()).unwrap(),
+            Transport {
+                clone_url: ssh.into(),
+                ssh_auth_sock: Some(team_socket),
+                rule: Some("github.com/squareup/".into()),
+            }
         );
     }
 

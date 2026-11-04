@@ -69,9 +69,10 @@ wins. A rule applies to a source when the platform matches, the host is equal, t
 starts with `pathPrefix` and contains no `%`, and either:
 
 - the source is `ssh://<sshUser>@<host>/…` on the default port or 22, or
-- the source is `https://<host>/…` on the default port, `rewriteHttps` is true, and the
-  source is not a community repository authorized by the relay. Git then reads
-  `ssh://<sshUser>@<host><path>`.
+- the source is `https://<host>/…` on the default port. Git then reads
+  `ssh://<sshUser>@<host><path>`, unless `rewriteHttps` is false or the source is a
+  community repository authorized by the relay; then Git reads the URL as entered and
+  no later rule is tried.
 
 A rule whose `sshAgentSocket` does not exist, or a rule without one while
 `SSH_AUTH_SOCK` is unset, does not apply, so public repositories stay readable over
@@ -80,8 +81,8 @@ rule's read fails, the error names the rule and agent socket.
 
 When a rule applies to an HTTPS prefix, every repository under it, public ones too, is
 read over SSH and needs a working agent. Set `rewriteHttps` to `false` to use a rule
-only for SSH sources. Such a rule does not stop a later rule, including a built-in
-one, from reading the same HTTPS sources over SSH; set `builtInRules` to `false` for that.
+only for SSH sources. HTTPS sources it matches are then read as entered, even when a
+later rule, including a built-in one, would read them over SSH.
 
 ## Built-in rules
 
