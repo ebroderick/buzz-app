@@ -569,7 +569,8 @@ export function HostedCommunities({
                 <p className="text-body-sm text-muted">
                   Your Builderlab account is linked to another Buzz key.
                   Creating communities and copying addresses are paused until
-                  the identities match.
+                  the identities match. To keep the account’s key, sign in to
+                  Buzz on this device with that key instead of switching.
                 </p>
                 <dl className="text-body-sm">
                   <dt className="text-muted">Account uses</dt>
@@ -584,8 +585,9 @@ export function HostedCommunities({
                     setConfirm({
                       title: "Switch to this device’s identity?",
                       // kgoose revokes an unlinked key: binding it again answers 409.
+                      // The client can't tell whether this device's key already was.
                       description:
-                        "The key your account uses now will be permanently unlinked. It can never be linked to a Builderlab account again.",
+                        "The key your account uses now will be permanently unlinked. It can never be linked to a Builderlab account again. If this device’s key was unlinked before, Builderlab refuses it too, and your account is left with no key.",
                       action: "Switch identity",
                       run: async () => {
                         check(

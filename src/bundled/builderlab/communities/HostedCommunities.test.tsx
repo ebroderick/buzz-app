@@ -197,6 +197,9 @@ it("pauses create and offers a warned switch when the account uses another ident
   expect(warning).toHaveTextContent(
     "It can never be linked to a Builderlab account again.",
   );
+  expect(warning).toHaveTextContent(
+    "If this device’s key was unlinked before, Builderlab refuses it too",
+  );
   expect(calls.map(([url]) => url)).not.toContain("/api/builderlab/unbind");
   fireEvent.click(
     within(await screen.findByRole("alertdialog")).getByRole("button", {

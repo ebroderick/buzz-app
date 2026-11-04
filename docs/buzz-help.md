@@ -53,10 +53,10 @@ the interface unless an available tool actually supports that action.
   to paste a private key into a conversation or send it to you.
 - **Settings → Buzz → Identity → Copy private key** lets someone make their own
   backup, for example in a password manager. They should handle it privately.
-  When Builderlab backup is on and the organization is signed in, the same page
-  shows the account's linked key when it is backed up, with when it was last active
-  in the current community. Backups of other keys are not shown, and the row is
-  read-only.
+  When Builderlab backup is on, the same page shows the account's linked key
+  when it is backed up, with when it was last active in the current community;
+  until the organization is signed in, that row asks them to sign in instead.
+  Backups of other keys are not shown, and the row is read-only.
   Backup and restore options depend on the build and account; do not promise
   recovery or assume automatic backup is on. Losing every copy of the private
   key can mean losing the identity.

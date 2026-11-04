@@ -216,7 +216,11 @@ kgoose never links a key again once it is unlinked.
 
 In Builderlab → Communities, a mismatched account offers **Switch to this
 device’s identity** only behind a confirmation that the account's current key
-will be permanently unlinked. There is no Unpair action.
+will be permanently unlinked, and that this device's key is refused too if it
+was unlinked before (as after Start over on another device), leaving the
+account with no key. The client can't detect that revocation, so the mismatch
+copy also points to the safe path: sign in on this device with the account's
+key. There is no Unpair action.
 
 Every lane ends with *Restoring your communities…* when the account check
 listed destinations saved to the account (`src/features/identity/restore-communities.ts`):
