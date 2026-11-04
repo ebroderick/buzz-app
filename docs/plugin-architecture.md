@@ -131,9 +131,10 @@ computer access, then select **Install plugin**. Opening the link does not insta
 enable, or grant access. You can close the dialog while the preview loads. A late
 result is discarded. Confirmed installation remains protected from dismissal.
 
-SSH uses the desktop process's inherited `SSH_AUTH_SOCK` and known hosts.
-The importer disables SSH config and interactive prompts. If terminal Git uses
-an `IdentityAgent`, launch Buzz with that socket as `SSH_AUTH_SOCK`.
+SSH uses known hosts and, unless a [repository access rule](repository-access.md)
+selects another agent, the desktop process's inherited `SSH_AUTH_SOCK`. The importer
+disables SSH config and interactive prompts. If terminal Git uses an `IdentityAgent`,
+add a rule with that socket, or launch Buzz with it as `SSH_AUTH_SOCK`.
 
 A new installation completes identity setup before the app can show the linked
 preview. For a repository hosted by a Buzz community, select that community and

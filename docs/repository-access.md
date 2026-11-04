@@ -58,8 +58,9 @@ file. A missing file means only the built-in rules apply.
 | `platforms` | no, default all | Any of `macos`, `linux`, `windows`. |
 
 Unknown fields are ignored. A rule with an invalid field is ignored and reported; the
-other rules still apply. A file that is not a JSON object, is too large, or has another
-`version` is unusable, and only the built-in rules apply.
+other rules still apply. A file that cannot be read as UTF-8 JSON of this shape, such
+as one that is too large, has another or no `version`, or has a `rules` or
+`builtInRules` value of the wrong type, is unusable, and only the built-in rules apply.
 
 ## Matching
 
@@ -70,7 +71,7 @@ starts with `pathPrefix` and contains no `%`, and either:
 - the source is `ssh://<sshUser>@<host>/…` on the default port or 22, or
 - the source is `https://<host>/…` on the default port, `rewriteHttps` is true, and the
   source is not a community repository authorized by the relay. Git then reads
-  `ssh://<sshUser>@<host>/<path>`.
+  `ssh://<sshUser>@<host><path>`.
 
 A rule whose `sshAgentSocket` does not exist, or a rule without one while
 `SSH_AUTH_SOCK` is unset, does not apply, so public repositories stay readable over
@@ -79,7 +80,8 @@ rule's read fails, the error names the rule and agent socket.
 
 When a rule applies to an HTTPS prefix, every repository under it, public ones too, is
 read over SSH and needs a working agent. Set `rewriteHttps` to `false` to use a rule
-only for SSH sources.
+only for SSH sources. Such a rule does not stop a later rule, including a built-in
+one, from reading the same HTTPS sources over SSH; set `builtInRules` to `false` for that.
 
 ## Built-in rules
 

@@ -2362,6 +2362,23 @@ mod tests {
             Err(error) => error,
         };
         assert!(!direct.contains("repository access rule"), "{direct}");
+        // Relay authorization is an HTTP header, so an authorized source is never moved to SSH.
+        let authorized = match prepare_git_authorized(
+            "https://git.invalid/team/plugin.git",
+            "",
+            None,
+            Some("dG9rZW4="),
+            None,
+            None,
+            &access,
+        ) {
+            Ok(_) => panic!("git.invalid cannot be read"),
+            Err(error) => error,
+        };
+        assert!(
+            !authorized.contains("repository access rule"),
+            "{authorized}"
+        );
     }
     #[test]
     fn git_deadline_and_output_limits_fail() {

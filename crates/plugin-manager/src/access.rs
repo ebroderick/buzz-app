@@ -841,6 +841,8 @@ mod tests {
         );
     }
 
+    // Windows drops rules with agent sockets.
+    #[cfg(unix)]
     #[test]
     fn parses_every_field_and_defaults() {
         let file = parse(
@@ -862,13 +864,11 @@ mod tests {
             file.rules,
             vec![first, rule("github.com", "/example-org/", "git")]
         );
-        if !cfg!(windows) {
-            let home = parse(r#"{"version": 1, "rules": [{"host": "github.com", "pathPrefix": "/a/", "sshUser": "git", "sshAgentSocket": "~/agent.sock"}]}"#).unwrap();
-            assert_eq!(
-                home.rules[0].ssh_agent_socket.as_deref(),
-                Some("~/agent.sock")
-            );
-        }
+        let home = parse(r#"{"version": 1, "rules": [{"host": "github.com", "pathPrefix": "/a/", "sshUser": "git", "sshAgentSocket": "~/agent.sock"}]}"#).unwrap();
+        assert_eq!(
+            home.rules[0].ssh_agent_socket.as_deref(),
+            Some("~/agent.sock")
+        );
         assert!(
             !parse(r#"{"version": 1, "builtInRules": false}"#)
                 .unwrap()
