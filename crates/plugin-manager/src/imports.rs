@@ -1012,7 +1012,14 @@ pub fn prepare_git_authorized(
         args.extend(["--branch", reference]);
     }
     args.extend(["--", &transport.clone_url, "repository"]);
-    git.run(&args, LIMIT)?;
+    git.run(&args, LIMIT)
+        .map_err(|error| match &transport.rule {
+            Some(rule) => format!(
+                "{error} (repository access rule {rule}, agent socket {})",
+                agent_label(&transport)
+            ),
+            None => error,
+        })?;
     let mut prepared = git.read_plugins(url.clone(), required.map(|required| required.0))?;
     if git.retired.as_ref().is_some_and(|retired| retired()) {
         return Err("Repository authorization retired".into());
@@ -2305,6 +2312,56 @@ mod tests {
             String::from_utf8(output).unwrap().trim(),
             socket.to_str().unwrap()
         );
+    }
+    #[cfg(unix)]
+    #[test]
+    fn failed_reads_name_the_access_rule() {
+        let home = tempfile::tempdir_in("/tmp").unwrap();
+        let socket = home.path().join("team.sock");
+        let _agent = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        fs::write(
+            home.path().join(crate::access::FILE_NAME),
+            format!(
+                r#"{{"version": 1, "rules": [{{"host": "git.invalid", "pathPrefix": "/team/", "sshUser": "git", "sshAgentSocket": "{}"}}]}}"#,
+                socket.display()
+            ),
+        )
+        .unwrap();
+        let access = crate::access::load(home.path(), None);
+        let error = match prepare_git_authorized(
+            "https://git.invalid/team/plugin.git",
+            "",
+            None,
+            None,
+            None,
+            None,
+            &access,
+        ) {
+            Ok(_) => panic!("git.invalid cannot be read"),
+            Err(error) => error,
+        };
+        // Only the suffix: the failure text itself depends on how far Git got before it
+        // removed its partial clone.
+        assert!(
+            error.ends_with(&format!(
+                " (repository access rule git.invalid/team/, agent socket {})",
+                socket.display()
+            )),
+            "{error}"
+        );
+        let direct = match prepare_git_authorized(
+            "https://git.invalid/other/plugin.git",
+            "",
+            None,
+            None,
+            None,
+            None,
+            &access,
+        ) {
+            Ok(_) => panic!("git.invalid cannot be read"),
+            Err(error) => error,
+        };
+        assert!(!direct.contains("repository access rule"), "{direct}");
     }
     #[test]
     fn git_deadline_and_output_limits_fail() {

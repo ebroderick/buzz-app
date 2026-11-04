@@ -53,6 +53,7 @@ struct Rule {
     rewrite_https: bool,
     /// `None` applies on every platform.
     platforms: Option<Vec<Platform>>,
+    built_in: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -83,6 +84,7 @@ fn built_in_rules() -> Vec<Rule> {
         ssh_agent_socket: Some("~/Library/Application Support/block-ssh-agent/agent.sock".into()),
         rewrite_https: true,
         platforms: Some(vec![Platform::Macos]),
+        built_in: true,
     }]
 }
 
@@ -250,6 +252,81 @@ fn agent_socket(socket: &str, home: &Path) -> Result<Option<PathBuf>> {
     }
 }
 
+impl AccessRules {
+    /// The text `buzzodz plugin access [URL]` prints. Fails only for a URL imports reject.
+    pub fn describe(&self, repository: Option<&str>, home: &Path) -> Result<String> {
+        use std::fmt::Write as _;
+
+        let repository = repository.map(crate::imports::repository_url).transpose()?;
+        let path = self
+            .path
+            .as_ref()
+            .map_or("none".into(), |path| path.display().to_string());
+        let status = match &self.status {
+            Status::Absent => "absent".into(),
+            Status::Invalid { reason } => format!("unusable: {reason}"),
+            Status::Ready => "ready".into(),
+        };
+        let mut text = format!("File: {path} ({status})\n");
+        for problem in &self.problems {
+            let _ = writeln!(text, "Problem: {problem}");
+        }
+        text.push_str("Rules, in the order they are tried:\n");
+        for rule in &self.rules {
+            let agent = rule
+                .ssh_agent_socket
+                .as_ref()
+                .map_or("inherited agent".into(), |socket| format!("agent {socket}"));
+            let https = if rule.rewrite_https {
+                "HTTPS read over SSH"
+            } else {
+                "SSH only"
+            };
+            let platforms = rule
+                .platforms
+                .as_ref()
+                .map_or("all platforms".into(), |platforms| {
+                    platforms
+                        .iter()
+                        .map(|platform| match platform {
+                            Platform::Macos => "macos",
+                            Platform::Linux => "linux",
+                            Platform::Windows => "windows",
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                });
+            let origin = if rule.built_in { " (built in)" } else { "" };
+            let _ = writeln!(
+                text,
+                "  {}{} as {}, {agent}, {https}, {platforms}{origin}",
+                rule.host, rule.path_prefix, rule.ssh_user
+            );
+        }
+        if let Some(repository) = repository {
+            let _ = writeln!(text, "URL: {repository}");
+            match self.resolve(&repository, false, home) {
+                Ok(transport) => {
+                    let _ = writeln!(
+                        text,
+                        "Rule: {}\nGit reads: {}\nAgent socket: {}",
+                        transport.rule.as_deref().unwrap_or("none"),
+                        transport.clone_url,
+                        transport
+                            .ssh_auth_sock
+                            .as_ref()
+                            .map_or("inherited".into(), |socket| socket.display().to_string())
+                    );
+                }
+                Err(error) => {
+                    let _ = writeln!(text, "Error: {error}");
+                }
+            }
+        }
+        Ok(text)
+    }
+}
+
 struct File {
     rules: Vec<Rule>,
     built_in_rules: bool,
@@ -375,6 +452,7 @@ fn parse_rule(entry: Value) -> Result<Rule> {
         ssh_agent_socket,
         rewrite_https,
         platforms,
+        built_in: false,
     })
 }
 
@@ -398,6 +476,7 @@ mod tests {
             ssh_agent_socket: None,
             rewrite_https: true,
             platforms: None,
+            built_in: false,
         }
     }
     fn problems(text: &str) -> Vec<String> {
@@ -656,6 +735,93 @@ mod tests {
     }
 
     #[test]
+    fn describes_the_file_rules_and_a_url() {
+        let home = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join(FILE_NAME);
+        let built_in_line = "  github.com/squareup/ as org-49461806, agent ~/Library/Application Support/block-ssh-agent/agent.sock, HTTPS read over SSH, macos (built in)";
+        assert_eq!(
+            load(root.path(), None).describe(None, home.path()).unwrap(),
+            format!(
+                "File: {} (absent)\nRules, in the order they are tried:\n{built_in_line}\n",
+                path.display()
+            )
+        );
+
+        fs::write(&path, r#"{"version": 2}"#).unwrap();
+        assert_eq!(
+            load(root.path(), None).describe(None, home.path()).unwrap(),
+            format!("File: {} (unusable: Unsupported version; this Buzz reads version 1)\nRules, in the order they are tried:\n{built_in_line}\n", path.display())
+        );
+        assert_eq!(
+            load(root.path(), Some("relative.json".into())).describe(None, home.path()).unwrap(),
+            format!("File: none (unusable: {PATH_ENV} must be an absolute path)\nRules, in the order they are tried:\n{built_in_line}\n")
+        );
+
+        fs::write(
+            &path,
+            r#"{"version": 1, "rules": [
+                {"host": "github.com", "pathPrefix": "/example-org/", "sshUser": "git", "rewriteHttps": false, "platforms": ["linux", "windows"]},
+                {"host": "github.com", "pathPrefix": "/bad/"}
+            ]}"#,
+        )
+        .unwrap();
+        let ready = load(root.path(), None);
+        assert_eq!(
+            ready.describe(None, home.path()).unwrap(),
+            format!(
+                "File: {} (ready)\nProblem: Rule 2: sshUser is required and must be a string\nRules, in the order they are tried:\n  github.com/example-org/ as git, inherited agent, SSH only, linux, windows\n{built_in_line}\n",
+                path.display()
+            )
+        );
+        let described = ready
+            .describe(Some("https://example.com/owner/plugin"), home.path())
+            .unwrap();
+        assert!(
+            described.ends_with("\nURL: https://example.com/owner/plugin\nRule: none\nGit reads: https://example.com/owner/plugin\nAgent socket: inherited\n"),
+            "{described}"
+        );
+        assert!(ready
+            .describe(Some("file:///tmp/plugin"), home.path())
+            .is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn describes_a_matched_rule_and_a_socket_error() {
+        let home = tempfile::tempdir_in("/tmp").unwrap();
+        let socket = home.path().join("team.sock");
+        let _agent = agent(&socket);
+        fs::write(home.path().join("file.sock"), "").unwrap();
+        let access = access(
+            r#"{"version": 1, "builtInRules": false, "rules": [
+                {"host": "git.example.com", "pathPrefix": "/team/", "sshUser": "git", "sshAgentSocket": "~/team.sock"},
+                {"host": "git.example.com", "pathPrefix": "/file/", "sshUser": "git", "sshAgentSocket": "~/file.sock"}
+            ]}"#,
+        );
+        let described = access
+            .describe(Some("https://git.example.com/team/plugin.git"), home.path())
+            .unwrap();
+        assert!(
+            described.ends_with(&format!(
+                "\nURL: https://git.example.com/team/plugin.git\nRule: git.example.com/team/\nGit reads: ssh://git@git.example.com/team/plugin.git\nAgent socket: {}\n",
+                socket.display()
+            )),
+            "{described}"
+        );
+        let described = access
+            .describe(Some("https://git.example.com/file/plugin.git"), home.path())
+            .unwrap();
+        assert!(
+            described.ends_with(&format!(
+                "\nURL: https://git.example.com/file/plugin.git\nError: SSH agent path is not a socket: {}\n",
+                home.path().join("file.sock").display()
+            )),
+            "{described}"
+        );
+    }
+
+    #[test]
     fn built_in_rule_is_the_square_macos_agent() {
         let access = built_in();
         assert_eq!(access.status, Status::Absent);
@@ -670,6 +836,7 @@ mod tests {
                 ),
                 rewrite_https: true,
                 platforms: Some(vec![Platform::Macos]),
+                built_in: true,
             }]
         );
     }

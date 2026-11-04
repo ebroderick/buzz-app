@@ -163,6 +163,8 @@ The CLI prints readable results and reports errors with a nonzero exit code.
 existing enabled state. `recover` backs up management settings and resets to
 bundled defaults, preserving artifacts for reinstallation. `managed` prints the
 [managed plugin policy](managed-plugins.md) and how each recommendation stands.
+`access [URL]` prints the [repository access rules](repository-access.md) and, for a
+URL, the rule, clone URL and agent socket a Git import would use.
 
 `--home ABSOLUTE_PATH` and `--profile NAME` precede `plugin`. The desktop and CLI
 also read `BUZZODZ_HOME` and `BUZZODZ_PROFILE` (default: `default`). Match these to
@@ -1647,14 +1649,12 @@ requires deleting the plugin and adding it again. Git checks remain explicit in 
 pane, using the remembered repository and branch/tag with fresh authorization;
 credentials/tokens are never saved with source metadata. SSH accepts explicit URLs
 and `user@host:owner/repository.git` shorthand, including organization-specific
-usernames. On macOS, sources at `ssh://org-49461806@github.com/squareup/…` on
-port 22 use Block's agent when its socket exists at
-`~/Library/Application Support/block-ssh-agent/agent.sock`. When that socket exists,
-`https://github.com/squareup/…` sources are read over that SSH URL instead; the saved
-source keeps the HTTPS URL. Public Square repositories then also need a working agent. Other SSH sources use
-the desktop process's inherited `SSH_AUTH_SOCK`. SSH uses known hosts, with
-interactive prompts and SSH config disabled. For another agent selected by
-`IdentityAgent` in SSH config, launch the app with that socket in `SSH_AUTH_SOCK`.
+usernames. [Repository access rules](repository-access.md) select the SSH user and
+agent socket for matching sources, and can read matching HTTPS sources over SSH; the
+saved source keeps the entered URL. Other SSH sources use the desktop process's
+inherited `SSH_AUTH_SOCK`. SSH uses known hosts, with interactive prompts and SSH
+config disabled. For another agent selected by `IdentityAgent` in SSH config, add a
+rule with that socket, or launch the app with it in `SSH_AUTH_SOCK`.
 Each check reads metadata from its own temporary clone; only Update retains an
 immutable installation preview. The source
 follows the current revision through update and rollback. Rollback requires confirmation

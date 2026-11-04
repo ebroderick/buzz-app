@@ -18,6 +18,7 @@ Commands:
   reload ID                Reload a folder plugin, preserving its enabled state
   list                     List installed pages and their enabled state
   managed                  Show the managed plugin sources policy and its status
+  access [URL]             Show repository access rules and how Git would read URL
   enable ID | disable ID | remove ID | rollback ID
   recover                  Back up settings and reset to bundled defaults
 
@@ -28,6 +29,7 @@ Options:
 
 The desktop and CLI also read BUZZODZ_HOME and BUZZODZ_PROFILE.
 BUZZ_MANAGED_PLUGINS overrides the managed plugin policy file location.
+BUZZ_REPOSITORY_ACCESS overrides the repository access rules file location.
 Launch the desktop with BUZZODZ_SAFE_MODE=1 to skip external pages.";
 
 fn main() {
@@ -124,6 +126,16 @@ fn run() -> Result<()> {
         ("reload", _) => return Err("Usage: buzzodz plugin reload ID".into()),
         ("list", []) => print_catalog(&manager.catalog()?)?,
         ("managed", []) => print_managed(&manager.managed(&manager.catalog()?)),
+        ("access", [] | [_]) => {
+            let home = dirs::home_dir().ok_or("Cannot find the home directory")?;
+            print!(
+                "{}",
+                manager
+                    .repository_access()
+                    .describe(rest.first().map(String::as_str), &home)?
+            );
+        }
+        ("access", _) => return Err("Usage: buzzodz plugin access [URL]".into()),
         ("recover", []) => {
             let catalog = manager.recover()?;
             println!("Reset profile {profile} to bundled defaults.\nAny previous settings were backed up in {}.\nExternal artifacts remain available for reinstallation.", catalog.location);
