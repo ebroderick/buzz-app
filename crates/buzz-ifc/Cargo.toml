@@ -9,6 +9,6 @@ description = "Buzz execution domains and broker-side information-flow checks"
 
 [dependencies]
 ifc-core = { path = "../ifc-core" }
-nostr = { version = "=0.45.5", default-features = false, features = ["std"] }
+nostr = { version = "=0.45.6", default-features = false, features = ["std"] }
 thiserror = "2"
 uuid = "1"

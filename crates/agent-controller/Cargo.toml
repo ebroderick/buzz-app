@@ -13,14 +13,14 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 regex = "1"
 sha2 = "0.10"
-hmac = "0.12"
-base64 = "0.22"
-nostr = { version = "=0.45.5", default-features = false, features = ["std", "nip44", "os-rng"] }
-getrandom = "0.3"
+hmac = "0.13"
+base64 = "0.23"
+nostr = { version = "=0.45.6", default-features = false, features = ["std", "nip44", "os-rng"] }
+getrandom = "0.4"
 buzz-credential-store = { path = "../credential-store" }
 url = "2"
-secp256k1 = { version = "0.31", default-features = false, features = ["std"] }
-bech32 = "0.11"
+secp256k1 = { version = "0.33", default-features = false, features = ["std"] }
+bech32 = "0.12"
 zeroize = "1.9"
 
 [target.'cfg(unix)'.dependencies]
